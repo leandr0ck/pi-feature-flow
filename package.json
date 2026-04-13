@@ -34,7 +34,9 @@
   "pi": {
     "extensions": [
       "./extensions/feature-ticket-flow.ts",
-      "./extensions/feature-review-viewer.ts"
+      "./extensions/feature-review-viewer.ts",
+      "./extensions/feature-plan-viewer.ts",
+      "./extensions/feature-ticket-viewer.ts"
     ],
     "skills": [
       "./skills"

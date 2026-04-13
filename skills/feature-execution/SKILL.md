@@ -42,3 +42,13 @@ Always end with one of:
 - `NEEDS-FIX` when partial work landed but the ticket is not ready
 
 Include a short note after the keyword when useful.
+
+## Viewing progress
+
+After completing a ticket or when requested, use the ticket viewer to show progress:
+- Lists all tickets with their current status
+- Shows which tickets are blocked awaiting dependencies
+- Allows launching execution of specific tickets
+- Provides a visual overview of feature completion
+
+Run the ticket viewer tool to display the interactive progress dashboard.

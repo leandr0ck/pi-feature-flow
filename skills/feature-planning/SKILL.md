@@ -147,7 +147,25 @@ Avoid tickets that are only:
 
 ## Finish state
 
-When the feature package is coherent and ready for execution, explicitly say `APPROVED`.
+When the feature package is coherent and ready for execution, explicitly say `APPROVED` and open the plan viewer for interactive review:
+- Run the plan viewer tool to let the user interactively review and approve the plan
+- User can check off items, reorder, and approve/needs-fix directly in the browser
+- If the user approves, proceed to ticket generation and execution workflow
+
 Ticket profiles should be explicit so mixed frontend/backend features route correctly during execution.
 If critical information is missing — including missing `04-technical-design.md` for technically complex work — say `BLOCKED` and explain why.
 If the plan exists but needs another pass, say `NEEDS-FIX`.
+
+## Viewer integration
+
+Use the plan viewer for interactive review when:
+1. The feature package (master spec + execution plan + tickets) is complete
+2. User asks to review or approve the plan
+3. You need user input on specific items or ordering
+
+The viewer provides:
+- Interactive checkbox-based progress tracking
+- Reordering of plan items and tickets
+- Inline editing of plan content
+- Approve/Needs-Fix actions with optional feedback
+- Browser-based UI that integrates with the feature workflow

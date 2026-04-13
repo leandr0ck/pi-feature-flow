@@ -12,12 +12,12 @@ describe("package install verification", () => {
     const result = await verifySandboxInstall({
       packageDir: PACKAGE_DIR,
       expect: {
-        extensions: 2,
+        extensions: 4,
       },
     });
 
     expect(result.loaded.extensionErrors).toEqual([]);
-    expect(result.loaded.extensions).toBe(2);
+    expect(result.loaded.extensions).toBe(4);
     expect(result.loaded.skills).toBeGreaterThanOrEqual(2);
   }, 60_000);
 });
