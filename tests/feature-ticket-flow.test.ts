@@ -115,6 +115,27 @@ describe("feature-ticket-flow integration", () => {
     expect(notifications.some((call) => String(call.args[0]).includes("Planning spec and tickets..."))).toBe(true);
   });
 
+  it("continues planning on /start-feature when 04-technical-design.md exists and tickets do not yet exist", async () => {
+    t = await createTestSession({
+      extensions: [EXTENSION_PATH],
+      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+    });
+
+    const { featureRoot, ticketsRoot } = await featurePaths(t.cwd, "technical-gate");
+    await mkdir(ticketsRoot, { recursive: true });
+    await writeFile(path.join(featureRoot, "01-master-spec.md"), "# technical-gate\n\nNeeds technical design\n", "utf8");
+    await writeFile(path.join(featureRoot, "02-execution-plan.md"), "# technical-gate execution plan\n", "utf8");
+    await writeFile(path.join(featureRoot, "04-technical-design.md"), "# technical design\n\nMore detail\n", "utf8");
+
+    patchHarnessCompatibility(t);
+    await t.run(when("/start-feature technical-gate", []));
+    await settleSession(t);
+
+    const userMessages = t.events.messages.filter((message) => message.role === "user").map(messageText).join("\n\n");
+    expect(userMessages).toContain("Continue planning for feature \"technical-gate\"");
+    expect(userMessages).toContain("04-technical-design.md");
+  });
+
   it("blocks /start-feature when validation fails", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],

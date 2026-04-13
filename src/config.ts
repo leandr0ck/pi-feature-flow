@@ -30,7 +30,6 @@ const DEPENDENCY_SPLIT_PATTERN = ",";
 const DEFAULT_AUTHORING_SKILLS: Required<AuthoringSkillsConfig> = {
   productRequirementsSkill: "prd-development",
   requirementsRefinementSkill: "spec-driven-workflow",
-  technicalDesignSkill: "technical-specification",
 };
 
 // ─── Config loading ───────────────────────────────────────────────────────────
@@ -94,7 +93,6 @@ function normalizeAuthoringSkills(
     productRequirementsSkill: input?.productRequirementsSkill ?? DEFAULT_AUTHORING_SKILLS.productRequirementsSkill,
     requirementsRefinementSkill:
       input?.requirementsRefinementSkill ?? DEFAULT_AUTHORING_SKILLS.requirementsRefinementSkill,
-    technicalDesignSkill: input?.technicalDesignSkill ?? DEFAULT_AUTHORING_SKILLS.technicalDesignSkill,
   } as Required<AuthoringSkillsConfig>;
 }
 

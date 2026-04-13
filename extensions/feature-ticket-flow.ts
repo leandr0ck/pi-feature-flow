@@ -119,7 +119,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
 
       const config = await loadConfig(ctx.cwd);
       const specsRoot = resolveSpecsRoot(ctx.cwd, config);
-      const created = await scaffoldFeature(specsRoot, slug);
+      const created = await scaffoldFeature(specsRoot, slug, true);
       emitInfo(pi, `Initialized ${slug}.\n${created.map((p) => `- ${p}`).join("\n")}`);
 
       const validation = await validateFeature(specsRoot, slug);
@@ -140,6 +140,11 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       const specsRoot = resolveSpecsRoot(ctx.cwd, config);
       const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
       if (!feature) return;
+
+      if (await maybeContinuePlanning(pi, feature, specsRoot, ctx)) {
+        return;
+      }
+
       if (!(await validateBeforeExecution(pi, feature, specsRoot, ctx))) return;
 
       const registry = await loadRegistry(specsRoot, feature);
@@ -169,6 +174,10 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       const specsRoot = resolveSpecsRoot(ctx.cwd, config);
       const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
       if (!feature) return;
+
+      if (await maybeContinuePlanning(pi, feature, specsRoot, ctx)) {
+        return;
+      }
 
       await runNextTicketFlow(pi, feature, ctx);
     },
@@ -501,7 +510,7 @@ async function startFeatureFromDescription(
   const specsRoot = resolveSpecsRoot(cwd, config);
   const baseSlug = deriveFeatureSlug(trimmed);
   const feature = await ensureUniqueFeatureSlug(specsRoot, baseSlug);
-  const created = await scaffoldFeature(specsRoot, feature);
+  const created = await scaffoldFeature(specsRoot, feature, false);
   const authoringSkills = resolveAuthoringSkills(config);
   const tddEnabled = resolveTddEnabled(config);
 
@@ -542,22 +551,25 @@ function buildFeaturePlanningPrompt(
     `- Authoring skill defaults (override per project via authoringSkills in config):`,
     `  - productRequirementsSkill: "${authoringSkills.productRequirementsSkill}"`,
     `  - requirementsRefinementSkill: "${authoringSkills.requirementsRefinementSkill}"`,
-    `  - technicalDesignSkill: "${authoringSkills.technicalDesignSkill}"`,
     "",
     `- TDD enabled: ${tddEnabled ? "true" : "false"}`,
     "",
     "Skill routing by feature complexity:",
     "- Simple feature → use productRequirementsSkill.",
     "- Medium feature → use productRequirementsSkill + requirementsRefinementSkill.",
-    "- Complex system → use productRequirementsSkill + requirementsRefinementSkill + technicalDesignSkill.",
+    "- Technically complex feature → first write the PRD/master spec, then STOP and ask the user to add `04-technical-design.md` before refinement and ticket generation.",
     "",
     "Treat `01-master-spec.md` as the principal document: PRD Lite for simple work, PRD-first master spec for medium/complex work.",
     "",
     "Planning rules:",
-    "- Classify the request as simple, medium, or complex before writing specs.",
+    "- Classify the request as simple, medium, or technically complex before writing specs.",
     "- Write a concise but actionable master spec.",
-    "- Keep the master spec product-readable first; move deep implementation detail into technical notes or derived technical sections when needed.",
-    "- Write an execution plan with clear sequencing and risks.",
+    "- Keep the master spec product-readable first.",
+    "- If the feature is technically complex enough to need architecture, contracts, migration, concurrency, or rollout design before refinement, do not invent that detail yourself.",
+    "- In that case, update `01-master-spec.md` with the product framing, explain exactly why more technical detail is required, ask the user to add `04-technical-design.md`, and end BLOCKED.",
+    "- The user may create `04-technical-design.md` however they want: manually, with another skill, or from external/internal documentation.",
+    "- Only write `02-execution-plan.md` and generate tickets when the feature is ready for refinement.",
+    "- Write an execution plan with clear sequencing and risks when refinement can proceed.",
     ...(tddEnabled
       ? [
           "- Because TDD is enabled, include test expectations in the execution plan and tickets where relevant.",
@@ -646,6 +658,99 @@ async function ensureUniqueFeatureSlug(specsRoot: string, baseSlug: string): Pro
 }
 
 // ─── Validation ───────────────────────────────────────────────────────────────
+
+async function maybeContinuePlanning(
+  pi: ExtensionAPI,
+  feature: string,
+  specsRoot: string,
+  ctx: { cwd?: string; ui: { notify: Function } },
+): Promise<boolean> {
+  const featureDir = path.join(specsRoot, feature);
+  const masterSpecPath = path.join(featureDir, "01-master-spec.md");
+  const technicalDesignPath = path.join(featureDir, "04-technical-design.md");
+  const ticketsDir = path.join(featureDir, "tickets");
+
+  if (!(await pathExists(masterSpecPath))) return false;
+
+  let ticketFiles: string[] = [];
+  try {
+    ticketFiles = (await fs.readdir(ticketsDir)).filter((file) => file.endsWith(".md"));
+  } catch {
+    ticketFiles = [];
+  }
+
+  if (ticketFiles.length > 0) return false;
+
+  if (!(await pathExists(technicalDesignPath))) {
+    ctx.ui.notify(
+      `Feature ${feature} still needs 04-technical-design.md before refinement and ticket generation can continue.`,
+      "warning",
+    );
+    emitInfo(
+      pi,
+      [
+        `Feature ${feature} is not ready for execution.`,
+        "",
+        "No tickets were found.",
+        "Add `04-technical-design.md` to continue planning for technically complex work.",
+        "After adding it, run `/start-feature <feature>` again.",
+      ].join("\n"),
+    );
+    return true;
+  }
+
+  const config = await loadConfig(ctx.cwd || process.cwd());
+  const authoringSkills = resolveAuthoringSkills(config);
+  const tddEnabled = resolveTddEnabled(config);
+
+  pendingExecution = { kind: "feature-plan", feature, cwd: ctx.cwd || process.cwd(), specsRoot };
+  ctx.ui.notify(`Technical design detected for ${feature}. Continuing planning...`, "info");
+  pi.sendUserMessage(buildPlanningContinuationPrompt(feature, specsRoot, authoringSkills, tddEnabled));
+  return true;
+}
+
+function buildPlanningContinuationPrompt(
+  feature: string,
+  specsRoot: string,
+  authoringSkills: ReturnType<typeof resolveAuthoringSkills>,
+  tddEnabled: boolean,
+): string {
+  const featureDir = path.join(specsRoot, feature);
+  return [
+    `Continue planning for feature "${feature}" now that additional technical detail is available.`,
+    `Feature directory: ${featureDir}`,
+    "Read these files first:",
+    `- ${path.join(featureDir, "01-master-spec.md")}`,
+    `- ${path.join(featureDir, "04-technical-design.md")}`,
+    `- ${path.join(featureDir, "02-execution-plan.md")}`,
+    "",
+    "Goal:",
+    "- Use the technical design document to complete refinement, write the execution plan, and generate dependency-aware tickets.",
+    "",
+    "Authoring skill defaults:",
+    `- productRequirementsSkill: "${authoringSkills.productRequirementsSkill}"`,
+    `- requirementsRefinementSkill: "${authoringSkills.requirementsRefinementSkill}"`,
+    `- TDD enabled: ${tddEnabled ? "true" : "false"}`,
+    "",
+    "Rules:",
+    "- Treat `01-master-spec.md` as the principal product-facing document.",
+    "- Use `04-technical-design.md` as supporting technical context, not as a replacement for the master spec.",
+    "- Update `02-execution-plan.md` with sequencing, risks, and validation strategy.",
+    ...(tddEnabled
+      ? [
+          "- Because TDD is enabled, include test expectations in the execution plan and tickets where relevant.",
+          "- Prefer tickets that keep the red-green-refactor loop small and local to each slice.",
+        ]
+      : []),
+    "- Create small, dependency-aware tickets as thin vertical slices.",
+    "- Every ticket must include a `- Profile:` line with exactly one execution profile name.",
+    "- Every ticket must include a `- Requires:` line.",
+    "- Use STK-001, STK-002, ... ticket ids.",
+    "- Keep all generated files inside the feature directory only.",
+    "",
+    "When you finish, clearly say whether the result is APPROVED, BLOCKED, or NEEDS-FIX.",
+  ].join("\n");
+}
 
 async function validateBeforeExecution(
   pi: ExtensionAPI,
@@ -750,7 +855,7 @@ function parseOutcome(messages: Array<{ role: string; content?: unknown }>): Par
 
 // ─── Scaffolding ───────────────────────────────────────────────────────────────
 
-async function scaffoldFeature(specsRoot: string, feature: string) {
+async function scaffoldFeature(specsRoot: string, feature: string, includeStarterTicket = true) {
   const featureDir = path.join(specsRoot, feature);
   const ticketsDir = path.join(featureDir, "tickets");
   await fs.mkdir(ticketsDir, { recursive: true });
@@ -766,16 +871,17 @@ async function scaffoldFeature(specsRoot: string, feature: string) {
     created.push(path.relative(specsRoot, absolutePath));
   }
 
-  // Create starter ticket
-  const starterId = "STK-001";
-  const starterPath = path.join(ticketsDir, `${starterId}.md`);
-  if (!(await pathExists(starterPath))) {
-    await fs.writeFile(
-      starterPath,
-      `# ${starterId} — Initial implementation slice\n\n## Goal\nDescribe the first thin slice for ${feature}.\n\n- Profile: default\n- Requires: none\n\n## Acceptance Criteria\n- Define one verifiable outcome for this first ticket.\n`,
-      "utf8",
-    );
-    created.push(path.relative(specsRoot, starterPath));
+  if (includeStarterTicket) {
+    const starterId = "STK-001";
+    const starterPath = path.join(ticketsDir, `${starterId}.md`);
+    if (!(await pathExists(starterPath))) {
+      await fs.writeFile(
+        starterPath,
+        `# ${starterId} — Initial implementation slice\n\n## Goal\nDescribe the first thin slice for ${feature}.\n\n- Profile: default\n- Requires: none\n\n## Acceptance Criteria\n- Define one verifiable outcome for this first ticket.\n`,
+        "utf8",
+      );
+      created.push(path.relative(specsRoot, starterPath));
+    }
   }
 
   return created;

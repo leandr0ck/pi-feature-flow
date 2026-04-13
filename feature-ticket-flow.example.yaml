@@ -18,7 +18,10 @@ tdd: false
 # authoringSkills:
 #   productRequirementsSkill: prd-development
 #   requirementsRefinementSkill: spec-driven-workflow
-#   technicalDesignSkill: technical-specification
+#
+# For technically complex work, the workflow will ask the user to add
+# `04-technical-design.md` before refinement and ticket generation continue.
+# The user can create that file however they want.
 #
 # Optional project-level TDD toggle.
 # If true, the package will instruct planning/execution prompts to prefer TDD.

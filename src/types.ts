@@ -66,15 +66,12 @@ export type FeatureExecutionProfile = {
  *
  * @default productRequirementsSkill      = "prd-development"
  * @default requirementsRefinementSkill  = "spec-driven-workflow"
- * @default technicalDesignSkill          = "technical-specification"
  */
 export type AuthoringSkillsConfig = {
   /** Skill for writing product-facing requirements: problem framing, scope, users, success criteria. */
   productRequirementsSkill?: string;
   /** Skill for tightening requirements into structured FR/NFR/acceptance criteria. */
   requirementsRefinementSkill?: string;
-  /** Skill for deeper technical design: architecture, data models, contracts, rollout. */
-  technicalDesignSkill?: string;
 };
 
 export type FeatureTicketFlowConfig = {

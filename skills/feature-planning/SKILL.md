@@ -26,13 +26,13 @@ Use `feature-planning` as the orchestration skill and normalize the document-aut
 2. **Select the source skill(s) for the master spec**
    - **Simple** → use `prd-development` as the base, but produce a **PRD Lite** in `01-master-spec.md`.
    - **Medium** → use `prd-development` + `spec-driven-workflow`.
-   - **Complex** → use `prd-development` + `spec-driven-workflow`, and derive one or more technical design sections using `technical-specification`.
+   - **Technically complex** → first use `prd-development` to establish the master spec, then stop and ask the user to add `04-technical-design.md` before refinement and ticket generation continue.
 
 3. **Normalize document roles**
    - `01-master-spec.md` is always the **main product-facing document**.
    - For simple work it can be a **PRD Lite / Feature Spec**.
-   - For medium and complex work it should be a **PRD-first master spec**.
-   - Technical implementation detail belongs either in a compact technical section or in linked derived tech-spec sections/files, not as a replacement for the master spec.
+   - For medium and technically complex work it should be a **PRD-first master spec**.
+   - If deeper technical detail is required before safe refinement, ask the user to provide `04-technical-design.md`. That document supports the master spec; it does not replace it.
 
 4. **Golden rule**
    - Do **not** start from pure implementation detail if product scope, actors, business rules, or success criteria are still unclear.
@@ -82,7 +82,8 @@ Produce a **PRD-first master spec** with at least:
 ### Technical detail policy
 - Keep the master spec product-readable first.
 - Include only the technical notes required to make planning unambiguous.
-- If architecture, data models, contracts, integrations, or rollout strategy become substantial, treat them as derived technical sections informed by `technical-specification`.
+- If architecture, data models, contracts, integrations, migration, concurrency, or rollout strategy become substantial enough that refinement would be unsafe, stop and ask the user to add `04-technical-design.md`.
+- The user may create `04-technical-design.md` manually, with another skill, or from internal/external documentation.
 
 ## Execution plan expectations
 
@@ -118,5 +119,5 @@ Avoid tickets that are only:
 
 When the feature package is coherent and ready for execution, explicitly say `APPROVED`.
 Ticket profiles should be explicit so mixed frontend/backend features route correctly during execution.
-If critical information is missing, say `BLOCKED` and explain why.
+If critical information is missing — including missing `04-technical-design.md` for technically complex work — say `BLOCKED` and explain why.
 If the plan exists but needs another pass, say `NEEDS-FIX`.

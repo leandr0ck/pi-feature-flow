@@ -88,7 +88,6 @@ tdd: false
 authoringSkills:
   productRequirementsSkill: prd-development
   requirementsRefinementSkill: spec-driven-workflow
-  technicalDesignSkill: technical-specification
 
 profiles:
   default:
@@ -111,7 +110,6 @@ profiles:
 | `tdd` | `boolean` | `false` | Adds TDD-oriented guidance to planning and execution prompts. The project is responsible for having a usable test setup. |
 | `authoringSkills.productRequirementsSkill` | `string` | `prd-development` | Skill used for product-facing requirements and problem framing. |
 | `authoringSkills.requirementsRefinementSkill` | `string` | `spec-driven-workflow` | Skill used to refine requirements into clearer FR/NFR/acceptance criteria. |
-| `authoringSkills.technicalDesignSkill` | `string` | `technical-specification` | Skill used for deeper technical design when needed. |
 | `profiles.<name>.matchAny` | `string[]` | `[]` | Optional legacy routing keywords. Ticket-level `- Profile:` is the primary routing mechanism. |
 | `profiles.<name>.preferSubagents` | `boolean` | `true` | If false, disables subagent-first guidance for that profile. |
 | `profiles.<name>.agents.<role>.agent` | `string` | builtin role name | Subagent name to use for planner/worker/reviewer. |
@@ -124,7 +122,7 @@ profiles:
 
 - Simple feature → PRD Lite / Feature Spec
 - Medium feature → PRD-first master spec
-- Complex feature → PRD-first master spec plus deeper technical sections when needed
+- Technically complex feature → PRD-first master spec, then wait for an explicit technical design document before refinement and tickets
 
 ### Authoring skill routing
 
@@ -132,7 +130,30 @@ profiles:
 |---|---|
 | Simple | `productRequirementsSkill` |
 | Medium | `productRequirementsSkill` + `requirementsRefinementSkill` |
-| Complex | `productRequirementsSkill` + `requirementsRefinementSkill` + `technicalDesignSkill` |
+| Technically complex | First `productRequirementsSkill`; then the workflow blocks and asks the user to add `04-technical-design.md` before refinement and ticket generation continue |
+
+### Technical-design gate for very complex work
+
+When the planner detects that refinement would be unsafe without additional technical detail — for example because of architecture, contracts, migrations, concurrency, or rollout concerns — it should:
+
+1. write/update `01-master-spec.md`
+2. stop before generating tickets
+3. ask the user to add `04-technical-design.md`
+4. continue planning after that document exists
+
+The user can create `04-technical-design.md` however they prefer:
+- manually
+- with another skill
+- from internal docs
+- from external research
+
+After the file exists, run:
+
+```bash
+/start-feature <feature>
+```
+
+The workflow will resume planning, write `02-execution-plan.md`, generate tickets, validate, and continue.
 
 ## Profiles
 
@@ -163,11 +184,12 @@ To inspect the current profile and options:
 
 1. Start with `/feature <description>`.
 2. Review the generated master spec and execution plan.
-3. Confirm each generated ticket has a `- Profile:` and `- Requires:` line.
-4. Approve planning.
-5. Let the package start the first ticket.
-6. Continue with `/next-ticket <feature>` until the feature is done.
-7. Use `/ticket-done`, `/ticket-blocked`, or `/ticket-needs-fix` if you need to override the current ticket state.
+3. If the feature is technically complex, add `04-technical-design.md` when the planner asks for it, then run `/start-feature <feature>` to resume planning.
+4. Confirm each generated ticket has a `- Profile:` and `- Requires:` line.
+5. Approve planning.
+6. Let the package start the first ticket.
+7. Continue with `/next-ticket <feature>` until the feature is done.
+8. Use `/ticket-done`, `/ticket-blocked`, or `/ticket-needs-fix` if you need to override the current ticket state.
 
 ## Validation rules
 
