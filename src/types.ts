@@ -80,6 +80,8 @@ export type FeatureTicketFlowConfig = {
   /** Root directory containing feature folders. Default: "./docs/technical-specs" */
   specsRoot: string;
   defaultProfile?: string;
+  /** Enables TDD-oriented planning and execution guidance. Responsibility for having a working test suite remains with the user/project. */
+  tdd?: boolean;
   /** Configurable authoring skill slots. Applied project-wide across all profiles. Defaults are applied during config normalization. */
   authoringSkills?: Partial<AuthoringSkillsConfig>;
   profiles?: Record<string, FeatureExecutionProfile>;

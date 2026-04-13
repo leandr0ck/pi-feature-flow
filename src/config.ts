@@ -43,6 +43,7 @@ const DEFAULT_PROFILE = "default";
 const DEFAULT_CONFIG: FeatureTicketFlowConfig = {
   specsRoot: DEFAULT_SPECS_ROOT,
   defaultProfile: DEFAULT_PROFILE,
+  tdd: false,
   profiles: {
     [DEFAULT_PROFILE]: {
       preferSubagents: true,
@@ -80,6 +81,7 @@ function normalizeConfig(parsed: Partial<FeatureTicketFlowConfig>): FeatureTicke
   return {
     specsRoot: parsed.specsRoot || DEFAULT_SPECS_ROOT,
     defaultProfile,
+    tdd: parsed.tdd ?? DEFAULT_CONFIG.tdd ?? false,
     authoringSkills: normalizeAuthoringSkills(parsed.authoringSkills),
     profiles: mergedProfiles,
   };
@@ -167,6 +169,10 @@ export function resolveAuthoringSkills(
   config: FeatureTicketFlowConfig,
 ): Required<AuthoringSkillsConfig> {
   return (config.authoringSkills ?? DEFAULT_AUTHORING_SKILLS) as Required<AuthoringSkillsConfig>;
+}
+
+export function resolveTddEnabled(config: FeatureTicketFlowConfig): boolean {
+  return config.tdd ?? false;
 }
 
 // ─── Exported constants for use in other modules ──────────────────────────────

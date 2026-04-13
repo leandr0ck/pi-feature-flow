@@ -1,6 +1,7 @@
 specsRoot: ./docs/technical-specs
 autoCapture: true
 defaultProfile: default
+tdd: false
 
 # User-facing configurable spec-authoring skill slots.
 # The bundled planning/execution workflow skills stay internal to the package.
@@ -10,6 +11,11 @@ defaultProfile: default
 #   productRequirementsSkill: prd-development
 #   requirementsRefinementSkill: spec-driven-workflow
 #   technicalDesignSkill: technical-specification
+#
+# Optional project-level TDD toggle.
+# If true, the package will instruct planning/execution prompts to prefer TDD.
+# Responsibility for having a working test suite remains with the project.
+# tdd: true
 
 profiles:
   default:

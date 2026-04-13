@@ -19,9 +19,10 @@ Read these before changing code:
 1. Implement only the assigned ticket.
 2. Respect dependencies and do not pull future tickets into scope.
 3. Prefer minimal, testable changes.
-4. Update tests and docs only when they are directly affected.
-5. If you discover follow-up work, capture it in the feature artifacts rather than silently expanding scope.
-6. If you cannot complete the ticket due to a real blocker, stop and explain the blocker clearly.
+4. If project guidance says TDD is enabled, prefer a red-green-refactor loop for the ticket.
+5. Update tests and docs only when they are directly affected.
+6. If you discover follow-up work, capture it in the feature artifacts rather than silently expanding scope.
+7. If you cannot complete the ticket due to a real blocker, stop and explain the blocker clearly.
 
 ## Good execution pattern
 

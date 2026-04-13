@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { loadConfig, renderAgentPreferences, resolveAuthoringSkills, resolveExecutionProfile, resolveExecutionProfileByName, resolveSpecsRoot } from "../src/config.js";
+import { loadConfig, renderAgentPreferences, resolveAuthoringSkills, resolveExecutionProfile, resolveExecutionProfileByName, resolveSpecsRoot, resolveTddEnabled } from "../src/config.js";
 import {
   areDependenciesDone,
   findNextAvailableTicket,
@@ -451,6 +451,7 @@ async function launchTicketExecution(
   const config = await loadConfig(cwd);
   const resolvedProfile = resolveProfileForFeature(config, persistedProfileName, feature);
   const { name: profileName, profile } = resolvedProfile;
+  const tddEnabled = resolveTddEnabled(config);
 
   const message = [
     `Run the bundled agent-driven ticket workflow for feature \"${feature}\" and ticket \"${ticketId}\".`,
@@ -465,6 +466,13 @@ async function launchTicketExecution(
     `- ${ticketPath}`,
     "Execution rules:",
     "- Implement the smallest vertical slice that satisfies the ticket.",
+    ...(tddEnabled
+      ? [
+          "- TDD is enabled for this project. Prefer red-green-refactor for this ticket.",
+          "- Write or update the relevant failing test(s) first when feasible, then implement the minimum code to make them pass.",
+          "- Prefer the available `tdd-guide` skill if it exists.",
+        ]
+      : []),
     "- Update code, tests, and docs only as needed for this ticket.",
     "- If you discover required follow-up work, record it in the ticket or execution plan without expanding scope.",
     "- Run targeted verification where possible.",
@@ -494,12 +502,13 @@ async function startFeatureFromDescription(pi: ExtensionAPI, description: string
   const created = await scaffoldFeature(specsRoot, feature);
   const { name: profileName, profile } = resolveExecutionProfile(config, `${feature} ${trimmed}`);
   const authoringSkills = resolveAuthoringSkills(config);
+  const tddEnabled = resolveTddEnabled(config);
 
   emitInfo(pi, `Initialized ${feature}.\n${created.map((p) => `- ${p}`).join("\n")}`);
   ctx.ui.notify(`Created feature ${feature}. Planning spec and tickets with profile ${profileName}...`, "info");
 
   pendingExecution = { kind: "feature-plan", feature, profileName, cwd, specsRoot };
-  pi.sendUserMessage(buildFeaturePlanningPrompt(feature, specsRoot, trimmed, profileName, profile, authoringSkills));
+  pi.sendUserMessage(buildFeaturePlanningPrompt(feature, specsRoot, trimmed, profileName, profile, authoringSkills, tddEnabled));
   return true;
 }
 
@@ -510,6 +519,7 @@ function buildFeaturePlanningPrompt(
   profileName: string,
   profile: ReturnType<typeof resolveExecutionProfile>["profile"],
   authoringSkills: ReturnType<typeof resolveAuthoringSkills>,
+  tddEnabled: boolean,
 ): string {
   const featureDir = path.join(specsRoot, feature);
   return [
@@ -534,6 +544,8 @@ function buildFeaturePlanningPrompt(
     `  - requirementsRefinementSkill: "${authoringSkills.requirementsRefinementSkill}"`,
     `  - technicalDesignSkill: "${authoringSkills.technicalDesignSkill}"`,
     "",
+    `- TDD enabled: ${tddEnabled ? "true" : "false"}`,
+    "",
     "Skill routing by feature complexity:",
     "- Simple feature → use productRequirementsSkill.",
     "- Medium feature → use productRequirementsSkill + requirementsRefinementSkill.",
@@ -547,6 +559,12 @@ function buildFeaturePlanningPrompt(
     "- Write a concise but actionable master spec.",
     "- Keep the master spec product-readable first; move deep implementation detail into technical notes or derived technical sections when needed.",
     "- Write an execution plan with clear sequencing and risks.",
+    ...(tddEnabled
+      ? [
+          "- Because TDD is enabled, include test expectations in the execution plan and tickets where relevant.",
+          "- Prefer tickets that keep the red-green-refactor loop small and local to each slice.",
+        ]
+      : []),
     "- Create small, dependency-aware tickets as thin vertical slices.",
     "- Every ticket must include a `- Requires:` line.",
     "- Use STK-001, STK-002, ... ticket ids.",

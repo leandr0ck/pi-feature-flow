@@ -114,6 +114,7 @@ There is also a ready-to-copy example in:
 | `specsRoot` | `string` | `"./docs/technical-specs"` | Root directory containing feature folders. |
 | `defaultProfile` | `string` | `"default"` | Profile used when no profile rule matches. |
 | `profiles.<name>.matchAny` | `string[]` | `[]` | Keyword list used to route a feature to a specific profile. |
+| `tdd` | `boolean` | `false` | Enables TDD-oriented planning and execution guidance. The project is responsible for having a usable test setup. |
 | `profiles.<name>.preferSubagents` | `boolean` | `true` | If false, disables subagent-first guidance for that profile. |
 | `profiles.<name>.agents.<role>.agent` | `string` | builtin role name | Which subagent name to use for planner/worker/reviewer. |
 | `profiles.<name>.agents.<role>.model` | `string` | unset | Preferred model for that role. |
@@ -168,6 +169,16 @@ Instead, expose only the configurable **authoring skill slots** that inform how 
 | `productRequirementsSkill` | Writes the product-facing requirements and problem framing for the master spec | `prd-development` |
 | `requirementsRefinementSkill` | Tightens requirements into clearer FR/NFR/acceptance criteria | `spec-driven-workflow` |
 | `technicalDesignSkill` | Adds deeper technical design when the feature needs it | `technical-specification` |
+
+### Optional TDD toggle
+
+Use a simple project-level boolean in config:
+
+```yaml
+tdd: true
+```
+
+When `tdd: true`, planning and ticket execution prompts tell the agent to prefer a TDD-style loop for implementation work. The package does **not** verify that a test harness exists — that responsibility remains with the project/user.
 
 ### Skill routing by feature complexity
 
