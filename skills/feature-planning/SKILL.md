@@ -87,22 +87,52 @@ Produce a **PRD-first master spec** with at least:
 
 ## Execution plan expectations
 
-Include at least:
-- approach summary
-- sequence of tickets
-- dependency logic
-- validation / testing strategy
-- rollout or migration notes if relevant
+`02-execution-plan.md` must use this exact shape:
+
+```md
+# <feature> execution plan
+
+## Approach Summary
+- <2-4 bullets>
+
+## Ticket Sequence
+1. STK-001 — <slice>
+2. STK-002 — <slice>
+
+## Dependency Logic
+- <why order/dependencies are correct>
+
+## Validation Strategy
+- <how the work will be verified>
+
+## Rollout Notes
+- <optional rollout/migration note, or state not applicable>
+```
+
+Keep the section names exactly as shown.
 
 ## Ticket writing guide
 
-Each ticket should include:
-- title
-- goal
-- `- Profile:` line with exactly one execution profile name
-- `- Requires:` line
-- implementation notes if useful
-- acceptance criteria
+Each ticket must use this exact shape:
+
+```md
+# STK-001 — <short title>
+
+## Goal
+<one short paragraph describing the smallest verifiable outcome>
+
+- Profile: <one execution profile name>
+- Requires: none | STK-001 | STK-001, STK-002
+
+## Implementation Notes
+- <2-5 concrete implementation notes>
+
+## Acceptance Criteria
+- <testable outcome>
+- <testable outcome>
+```
+
+Keep the section names and metadata labels exactly as shown.
 
 Prefer slices like:
 - data model + one narrow path

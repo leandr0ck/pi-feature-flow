@@ -44,6 +44,28 @@ All notable changes to this project will be documented in this file.
 ### Updated
 - README, skill docs, and prompts updated to reflect the new flow and removed skill slot
 
+## [0.1.8] - 2026-04-13
+
+### Changed
+- `02-execution-plan.md` now uses a strict markdown template with fixed sections for approach, sequence, dependencies, validation, and rollout
+- Planning prompts now include the exact execution plan template as well as the ticket template
+- Feature scaffolding now generates the execution plan from a shared template renderer
+
+### Added
+- `execution-plan-template-mismatch` validation error when `02-execution-plan.md` does not follow the required template
+- Shared execution plan template helpers used by scaffolding, planning prompts, and validation
+
+## [0.1.7] - 2026-04-13
+
+### Changed
+- Ticket generation now uses a strict markdown template with fixed sections: `Goal`, `Implementation Notes`, and `Acceptance Criteria`
+- Planning prompts now include the exact ticket template instead of relying on looser natural-language guidance
+- Starter ticket scaffolding now comes from the shared ticket template renderer
+
+### Added
+- `ticket-template-mismatch` validation error when a ticket does not follow the required markdown template
+- Shared ticket template helpers used by scaffolding, planning prompts, and validation
+
 ## [0.1.6] - 2026-04-13
 
 ### Changed

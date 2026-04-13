@@ -5,6 +5,8 @@ import {
   resolveExecutionProfile,
   resolveExecutionProfileByName,
 } from "../config.js";
+import { buildExecutionPlanTemplateInstructions } from "../execution-plan-template.js";
+import { buildTicketTemplateInstructions } from "../ticket-template.js";
 import type { FeatureExecutionProfile } from "../types.js";
 
 export function buildFeaturePlanningPrompt(
@@ -71,6 +73,10 @@ export function buildFeaturePlanningPrompt(
     "- Use STK-001, STK-002, ... ticket ids.",
     "- Keep all generated files inside the feature directory only.",
     "",
+    buildExecutionPlanTemplateInstructions(),
+    "",
+    buildTicketTemplateInstructions(availableProfiles),
+    "",
     "Do not implement application code yet unless the planning workflow truly requires a tiny probe. Focus on producing the feature package.",
     "When you finish, clearly say whether the result is APPROVED, BLOCKED, or NEEDS-FIX.",
   ].join("\n");
@@ -84,6 +90,7 @@ export function buildPlanningContinuationPrompt(
     requirementsRefinementSkill: string;
   },
   tddEnabled: boolean,
+  availableProfiles: string[],
 ): string {
   const featureDir = path.join(specsRoot, feature);
   return [
@@ -117,6 +124,66 @@ export function buildPlanningContinuationPrompt(
     "- Every ticket must include a `- Requires:` line.",
     "- Use STK-001, STK-002, ... ticket ids.",
     "- Keep all generated files inside the feature directory only.",
+    "",
+    buildExecutionPlanTemplateInstructions(),
+    "",
+    buildTicketTemplateInstructions(availableProfiles),
+    "",
+    "When you finish, clearly say whether the result is APPROVED, BLOCKED, or NEEDS-FIX.",
+  ].join("\n");
+}
+
+export function buildFeatureRevisionPrompt(
+  feature: string,
+  specsRoot: string,
+  feedback: string,
+  authoringSkills: {
+    productRequirementsSkill: string;
+    requirementsRefinementSkill: string;
+  },
+  tddEnabled: boolean,
+  availableProfiles: string[],
+): string {
+  const featureDir = path.join(specsRoot, feature);
+  return [
+    `Revise the planned feature package for feature "${feature}" based on review feedback.`,
+    `Feature directory: ${featureDir}`,
+    "Read these files first:",
+    `- ${path.join(featureDir, "01-master-spec.md")}`,
+    `- ${path.join(featureDir, "02-execution-plan.md")}`,
+    `- tickets under ${path.join(featureDir, "tickets")}`,
+    `- ${path.join(featureDir, "05-review-log.md")}`,
+    "",
+    "Review feedback to address:",
+    feedback,
+    "",
+    "Goal:",
+    "- Update the existing docs and tickets to address the feedback with the smallest coherent set of changes.",
+    "- Keep what is already good; do not rewrite the whole package unless necessary.",
+    "- Preserve ticket ids where possible so review iterations stay stable.",
+    "",
+    "Authoring skill defaults:",
+    `- productRequirementsSkill: \"${authoringSkills.productRequirementsSkill}\"`,
+    `- requirementsRefinementSkill: \"${authoringSkills.requirementsRefinementSkill}\"`,
+    `- TDD enabled: ${tddEnabled ? "true" : "false"}`,
+    "",
+    "Rules:",
+    "- Update only files inside the feature directory.",
+    "- Keep `01-master-spec.md` as the principal product-facing document.",
+    "- Keep `02-execution-plan.md` aligned with the revised scope and sequencing.",
+    "- Keep tickets as thin vertical slices and preserve dependency logic.",
+    "- Every ticket must include a `- Profile:` line with exactly one execution profile name.",
+    `- Allowed ticket profiles: ${availableProfiles.join(", ")}`,
+    "- Every ticket must include a `- Requires:` line.",
+    ...(tddEnabled
+      ? [
+          "- Because TDD is enabled, keep test expectations explicit in the plan and ticket acceptance criteria.",
+        ]
+      : []),
+    "",
+    buildExecutionPlanTemplateInstructions(),
+    "",
+    buildTicketTemplateInstructions(availableProfiles),
     "",
     "When you finish, clearly say whether the result is APPROVED, BLOCKED, or NEEDS-FIX.",
   ].join("\n");

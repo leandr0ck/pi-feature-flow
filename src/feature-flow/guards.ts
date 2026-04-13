@@ -52,10 +52,11 @@ export async function maybeContinuePlanning(
   const config = await loadConfig(ctx.cwd || process.cwd());
   const authoringSkills = resolveAuthoringSkills(config);
   const tddEnabled = resolveTddEnabled(config);
+  const availableProfiles = Object.keys(config.profiles || { default: {} });
 
   setPendingExecution({ kind: "feature-plan", feature, cwd: ctx.cwd || process.cwd(), specsRoot });
   ctx.ui.notify(`Technical design detected for ${feature}. Continuing planning...`, "info");
-  pi.sendUserMessage(buildPlanningContinuationPrompt(feature, specsRoot, authoringSkills, tddEnabled));
+  pi.sendUserMessage(buildPlanningContinuationPrompt(feature, specsRoot, authoringSkills, tddEnabled, availableProfiles));
   return true;
 }
 

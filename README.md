@@ -11,9 +11,10 @@ Pi package for turning a feature description into:
 
 - `/feature <description>` — create a feature from a description and start the workflow
 - `/init-feature <feature-name>` — scaffold a feature folder with spec files and a starter ticket
-- `/review-feature <feature-name>` — open the browser-based review viewer for a feature
+- `/review-feature <feature-name>` — open the browser-based review viewer for a feature, including revision diffs when available
 - `/approve-feature <feature-name>` — approve a feature directly without opening the viewer
 - `/request-feature-changes <feature-name> [comment]` — request changes on a feature
+- `/revise-feature <feature-name> [feedback]` — apply review feedback to the generated docs and reopen review
 - `/start-feature <feature-name>` — show status and start or resume the next ticket (requires approval)
 - `/next-ticket <feature-name>` — pick and execute the next available ticket automatically (requires approval)
 - `/ticket-status <feature-name>` — show current feature ticket progress
@@ -53,11 +54,24 @@ If `subagent` is unavailable, the package still works and falls back to direct e
       ...
 ```
 
-Each ticket must declare its execution profile and dependencies with lines like:
+Each ticket must use the required template shape and declare its execution profile and dependencies explicitly:
 
 ```md
-- Profile: frontend
+# STK-002 — Add welcome email trigger
+
+## Goal
+Send the welcome email when onboarding is completed for the first time.
+
+- Profile: backend
 - Requires: STK-001
+
+## Implementation Notes
+- Reuse the onboarding completion event.
+- Guard against duplicate sends.
+
+## Acceptance Criteria
+- Completing onboarding sends one welcome email.
+- Repeating completion does not send duplicates.
 ```
 
 ## How it works
@@ -72,11 +86,11 @@ The package will:
 1. Derive a feature slug from the description.
 2. Scaffold the feature folder.
 3. Generate the master spec and execution plan.
-4. Generate dependency-aware ticket files.
+4. Generate a strict execution plan and dependency-aware ticket files from templates.
 5. Validate the resulting structure.
-6. Open the review viewer in your browser — you must approve before tickets can be executed.
-7. Once approved, start the first ticket (or use `/start-feature` or `/next-ticket`).
-8. Continue with `/next-ticket` until all tickets are done.
+6. Open the review viewer in your browser automatically — this is the primary review step.
+7. If you request changes, the extension can revise the docs with the agent and send them back for review until they are approved.
+8. Once approved, implementation starts automatically and advances ticket by ticket until it finishes or hits a blocked / needs-fix state.
 
 ## Configuration
 
@@ -198,12 +212,11 @@ To inspect the current profile and options:
 ## Suggested workflow
 
 1. Start with `/feature <description>`.
-2. Review the generated master spec and execution plan in the browser viewer.
-3. Approve, request changes, or close the review. If you request changes, update the docs and run `/review-feature <feature>` again.
-4. Once approved, the first ticket becomes executable. Use the viewer prompt or run `/start-feature <feature>`.
-5. Confirm each generated ticket has a `- Profile:` and `- Requires:` line.
-6. Let the package execute tickets. Use `/next-ticket <feature>` until the feature is done.
-7. Use `/ticket-done`, `/ticket-blocked`, or `/ticket-needs-fix` if you need to override the current ticket state.
+2. Review the generated master spec, execution plan, and tickets in the browser viewer.
+3. Approve, request changes, or close the review in the browser. If you request changes, either choose the built-in revise flow or run `/revise-feature <feature> <feedback>` later.
+4. Iterate review ↔ revision until the package is approved. The browser viewer shows lightweight diffs between the current revision and the previous reviewed snapshot.
+5. Once approved, the extension automatically enters implementation and advances ticket by ticket.
+6. If execution stops because a ticket is blocked or needs fix, use `/ticket-blocked`, `/ticket-needs-fix`, `/ticket-done`, `/start-feature`, or `/next-ticket` to steer it.
 
 ## Validation rules
 
@@ -219,6 +232,8 @@ To inspect the current profile and options:
 | `duplicate-dependency` | warning | The same dependency is listed twice for one ticket. |
 | `orphan-ticket` | warning | A ticket has no dependencies and nothing depends on it. |
 | `missing-ticket-profile` | error | A ticket is missing a required `- Profile:` line. |
+| `ticket-template-mismatch` | error | A ticket does not follow the required ticket markdown template. |
+| `execution-plan-template-mismatch` | error | `02-execution-plan.md` does not follow the required execution plan template. |
 
 ## Publish
 

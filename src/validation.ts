@@ -1,7 +1,9 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { FeatureValidationResult, TicketRecord, ValidationIssue } from "./types.js";
+import { validateExecutionPlanTemplate } from "./execution-plan-template.js";
 import { getTicket } from "./registry.js";
+import { validateTicketTemplate } from "./ticket-template.js";
 
 // Convention-based constants (not configurable)
 const REQUIRED_SPEC_FILES = ["01-master-spec.md", "02-execution-plan.md"] as const;
@@ -21,6 +23,20 @@ export async function validateFeature(specsRoot: string, feature: string): Promi
         code: "missing-spec-file",
         message: `Missing required spec file: ${fileName}`,
         filePath,
+      });
+    }
+  }
+
+  const executionPlanPath = path.join(featureDir, "02-execution-plan.md");
+  if (await pathExists(executionPlanPath)) {
+    const planContent = await fs.readFile(executionPlanPath, "utf8");
+    const planTemplateIssues = validateExecutionPlanTemplate(planContent);
+    if (planTemplateIssues.length > 0) {
+      issues.push({
+        severity: "error",
+        code: "execution-plan-template-mismatch",
+        message: `Execution plan does not follow the required template: ${planTemplateIssues.join("; ")}.`,
+        filePath: executionPlanPath,
       });
     }
   }
@@ -81,6 +97,18 @@ export async function validateFeature(specsRoot: string, feature: string): Promi
       });
     }
     seenIds.add(normalized);
+
+    const content = await fs.readFile(ticket.path, "utf8");
+    const templateIssues = validateTicketTemplate(content);
+    if (templateIssues.length > 0) {
+      issues.push({
+        severity: "error",
+        code: "ticket-template-mismatch",
+        message: `Ticket ${ticket.id} does not follow the required template: ${templateIssues.join("; ")}.`,
+        ticketId: ticket.id,
+        filePath: ticket.path,
+      });
+    }
 
     // Warn about non-standard id format
     if (!/^(?:[A-Z]+-\d+|T\d+)$/i.test(ticket.id)) {

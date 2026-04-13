@@ -50,7 +50,11 @@ async function seedFeature(
   const { featureRoot, ticketsRoot } = await featurePaths(cwd, feature);
   await mkdir(ticketsRoot, { recursive: true });
   await writeFile(path.join(featureRoot, "01-master-spec.md"), `# ${feature} master spec\n\n## Goal\nTest feature\n`, "utf8");
-  await writeFile(path.join(featureRoot, "02-execution-plan.md"), `# ${feature} execution plan\n`, "utf8");
+  await writeFile(
+    path.join(featureRoot, "02-execution-plan.md"),
+    `# ${feature} execution plan\n\n## Approach Summary\n- Deliver a minimal valid feature package.\n\n## Ticket Sequence\n1. STK-001 — first slice\n\n## Dependency Logic\n- Keep dependencies explicit and minimal.\n\n## Validation Strategy\n- Validate planning artifacts before execution.\n\n## Rollout Notes\n- Not applicable for tests.\n`,
+    "utf8",
+  );
 
   for (const ticket of tickets) {
     await writeFile(path.join(ticketsRoot, `${ticket.id}.md`), ticket.body, "utf8");
@@ -83,8 +87,12 @@ describe("feature-ticket-flow integration", () => {
 
     expect(masterSpec).toContain("demo-feature");
     expect(executionPlan).toContain("execution plan");
+    expect(executionPlan).toContain("## Approach Summary");
+    expect(executionPlan).toContain("## Ticket Sequence");
     expect(starterTicket).toContain("STK-001");
     expect(starterTicket).toContain("- Profile: default");
+    expect(starterTicket).toContain("## Implementation Notes");
+    expect(starterTicket).toContain("## Acceptance Criteria");
   });
 
   it("uses /feature without requiring a profile and asks for ticket-level profiles", async () => {
@@ -112,6 +120,10 @@ describe("feature-ticket-flow integration", () => {
 
     expect(userMessages).toContain("Every ticket must include a `- Profile:` line");
     expect(userMessages).toContain("Allowed ticket profiles: default, frontend, backend");
+    expect(userMessages).toContain("Execution plan format is strict. Do not invent your own structure.");
+    expect(userMessages).toContain("Ticket file format is strict. Do not invent your own structure.");
+    expect(userMessages).toContain("## Approach Summary");
+    expect(userMessages).toContain("## Implementation Notes");
     expect(notifications.some((call) => String(call.args[0]).includes("Planning spec and tickets..."))).toBe(true);
   });
 
@@ -148,12 +160,60 @@ describe("feature-ticket-flow integration", () => {
     await writeFile(path.join(featureRoot, "01-master-spec.md"), "# broken-feature\n", "utf8");
     await writeFile(
       path.join(ticketsRoot, "STK-001.md"),
-      "# STK-001 — Missing dependency\n\n- Profile: backend\n- Requires: STK-999\n",
+      "# STK-001 — Missing dependency\n\n## Goal\nValidate dependency errors.\n\n- Profile: backend\n- Requires: STK-999\n\n## Implementation Notes\n- Keep this ticket intentionally invalid.\n\n## Acceptance Criteria\n- Validation reports the missing dependency.\n",
       "utf8",
     );
 
     patchHarnessCompatibility(t);
     await t.run(when("/start-feature broken-feature", []));
+
+    const notifications = t.events.uiCallsFor("notify");
+    expect(notifications.some((call) => String(call.args[0]).includes("failed validation"))).toBe(true);
+  });
+
+  it("blocks /start-feature when a ticket does not follow the required template", async () => {
+    t = await createTestSession({
+      extensions: [EXTENSION_PATH],
+      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+      mockUI: { select: 0 },
+    });
+
+    const { featureRoot, ticketsRoot } = await featurePaths(t.cwd, "template-broken");
+    await mkdir(ticketsRoot, { recursive: true });
+    await writeFile(path.join(featureRoot, "01-master-spec.md"), "# template-broken\n", "utf8");
+    await writeFile(path.join(featureRoot, "02-execution-plan.md"), "# template-broken execution plan\n\n## Approach Summary\n- Broken on purpose\n\n## Ticket Sequence\n1. STK-001 — broken\n\n## Dependency Logic\n- Broken on purpose\n\n## Validation Strategy\n- Broken on purpose\n\n## Rollout Notes\n- Broken on purpose\n", "utf8");
+    await writeFile(
+      path.join(ticketsRoot, "STK-001.md"),
+      "# STK-001 — Missing sections\n\n## Goal\nDo work\n\n- Profile: default\n- Requires: none\n",
+      "utf8",
+    );
+
+    patchHarnessCompatibility(t);
+    await t.run(when("/start-feature template-broken", []));
+
+    const notifications = t.events.uiCallsFor("notify");
+    expect(notifications.some((call) => String(call.args[0]).includes("failed validation"))).toBe(true);
+  });
+
+  it("blocks /start-feature when the execution plan does not follow the required template", async () => {
+    t = await createTestSession({
+      extensions: [EXTENSION_PATH],
+      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+      mockUI: { select: 0 },
+    });
+
+    const { featureRoot, ticketsRoot } = await featurePaths(t.cwd, "plan-broken");
+    await mkdir(ticketsRoot, { recursive: true });
+    await writeFile(path.join(featureRoot, "01-master-spec.md"), "# plan-broken\n", "utf8");
+    await writeFile(path.join(featureRoot, "02-execution-plan.md"), "# plan-broken execution plan\n\n## Notes\n- wrong format\n", "utf8");
+    await writeFile(
+      path.join(ticketsRoot, "STK-001.md"),
+      "# STK-001 — Valid ticket\n\n## Goal\nDo work\n\n- Profile: default\n- Requires: none\n\n## Implementation Notes\n- Keep valid ticket format.\n\n## Acceptance Criteria\n- Validation should fail because the plan is wrong.\n",
+      "utf8",
+    );
+
+    patchHarnessCompatibility(t);
+    await t.run(when("/start-feature plan-broken", []));
 
     const notifications = t.events.uiCallsFor("notify");
     expect(notifications.some((call) => String(call.args[0]).includes("failed validation"))).toBe(true);
@@ -169,7 +229,7 @@ describe("feature-ticket-flow integration", () => {
     await seedFeature(t.cwd, "demo", [
       {
         id: "STK-001",
-        body: "# STK-001 — First ticket\n\n- Profile: default\n- Requires: none\n",
+        body: "# STK-001 — First ticket\n\n## Goal\nShip the first slice.\n\n- Profile: default\n- Requires: none\n\n## Implementation Notes\n- Start with the thinnest slice.\n\n## Acceptance Criteria\n- The first slice is complete.\n",
       },
     ]);
 
@@ -229,7 +289,7 @@ describe("feature-ticket-flow integration", () => {
     await seedFeature(t.cwd, "profile-routing", [
       {
         id: "STK-001",
-        body: "# STK-001 — Backend ticket\n\n- Profile: backend\n- Requires: none\n",
+        body: "# STK-001 — Backend ticket\n\n## Goal\nRun backend work.\n\n- Profile: backend\n- Requires: none\n\n## Implementation Notes\n- Use the backend profile.\n\n## Acceptance Criteria\n- Backend task completes.\n",
       },
     ]);
 
@@ -264,7 +324,7 @@ describe("feature-ticket-flow integration", () => {
     expect(userMessages).toContain("Execution profile: backend");
   });
 
-  it("prioritizes needs-fix tickets before pending ones on /next-ticket", async () => {
+  it("prioritizes needs-fix tickets before pending ones on /next-ticket and then auto-advances", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
@@ -274,11 +334,11 @@ describe("feature-ticket-flow integration", () => {
     await seedFeature(t.cwd, "priority", [
       {
         id: "STK-001",
-        body: "# STK-001 — Retry me\n\n- Profile: default\n- Requires: none\n",
+        body: "# STK-001 — Retry me\n\n## Goal\nRetry this ticket first.\n\n- Profile: default\n- Requires: none\n\n## Implementation Notes\n- This ticket should be selected before pending work.\n\n## Acceptance Criteria\n- Retry completes.\n",
       },
       {
         id: "STK-002",
-        body: "# STK-002 — Still pending\n\n- Profile: default\n- Requires: none\n",
+        body: "# STK-002 — Still pending\n\n## Goal\nLeave this as pending.\n\n- Profile: default\n- Requires: none\n\n## Implementation Notes\n- This should stay second.\n\n## Acceptance Criteria\n- Pending ticket remains available after retry.\n",
       },
     ]);
 
@@ -320,7 +380,7 @@ describe("feature-ticket-flow integration", () => {
 
     expect(retried?.status).toBe("done");
     expect(retried?.runs.at(-1)?.mode).toBe("retry");
-    expect(untouched?.status).toBe("pending");
+    expect(untouched?.status).toBe("done");
   });
 
   it("shows current profile for a feature with /feature-profile <slug>", async () => {
@@ -330,7 +390,7 @@ describe("feature-ticket-flow integration", () => {
     });
 
     await seedFeature(t.cwd, "profile-test", [
-      { id: "STK-001", body: "# STK-001\n\n- Profile: frontend\n- Requires: none\n" },
+      { id: "STK-001", body: "# STK-001 — Show profile\n\n## Goal\nInspect current profile.\n\n- Profile: frontend\n- Requires: none\n\n## Implementation Notes\n- Minimal valid ticket.\n\n## Acceptance Criteria\n- Profile is visible in status.\n" },
     ]);
 
     const { specsRoot } = await featurePaths(t.cwd, "profile-test");
@@ -355,7 +415,7 @@ describe("feature-ticket-flow integration", () => {
     });
 
     await seedFeature(t.cwd, "set-profile-test", [
-      { id: "STK-001", body: "# STK-001\n\n- Profile: frontend\n- Requires: none\n" },
+      { id: "STK-001", body: "# STK-001 — Set profile\n\n## Goal\nAllow profile override.\n\n- Profile: frontend\n- Requires: none\n\n## Implementation Notes\n- Minimal valid ticket.\n\n## Acceptance Criteria\n- Profile can be changed.\n" },
     ]);
 
     patchHarnessCompatibility(t);

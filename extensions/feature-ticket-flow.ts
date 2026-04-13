@@ -23,6 +23,7 @@ import {
 } from "../src/feature-flow/guards.js";
 import {
   buildFeaturePlanningPrompt,
+  buildFeatureRevisionPrompt,
   buildSubagentGuidance,
   resolveProfileForFeature,
 } from "../src/feature-flow/prompts.js";
@@ -41,9 +42,9 @@ import {
 import { createFeatureCompletions } from "../src/feature-flow/ui.js";
 import {
   canExecuteFeature,
-  defaultReviewRecord,
   formatReviewSummary,
   getFeatureReviewDocuments,
+  markReviewPending,
 } from "../src/feature-flow/review.js";
 import { openFeatureReview } from "./feature-review-viewer.js";
 import { validateFeature } from "../src/validation.js";
@@ -75,35 +76,39 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     if (!parsed) return;
 
     try {
-      if (pending.kind === "feature-plan") {
+      if (pending.kind === "feature-plan" || pending.kind === "feature-revision") {
+        const isRevision = pending.kind === "feature-revision";
         const label = outcomeLabel(parsed.status);
-        emitInfo(pi, `Feature planning for ${pending.feature}: ${label}${parsed.note ? `\n${parsed.note}` : ""}`);
+        emitInfo(pi, `${isRevision ? "Feature revision" : "Feature planning"} for ${pending.feature}: ${label}${parsed.note ? `\n${parsed.note}` : ""}`);
 
         if (parsed.status !== "done") {
-          ctx.ui.notify(`Feature planning for ${pending.feature}: ${label}`, parsed.status === "blocked" ? "warning" : "info");
+          ctx.ui.notify(
+            `${isRevision ? "Feature revision" : "Feature planning"} for ${pending.feature}: ${label}`,
+            parsed.status === "blocked" ? "warning" : "info",
+          );
           return;
         }
 
         const validation = await validateFeature(pending.specsRoot, pending.feature);
         emitInfo(pi, renderValidation(validation));
         if (!validation.valid) {
-          ctx.ui.notify(`Feature ${pending.feature} was planned but failed validation.`, "warning");
+          ctx.ui.notify(`Feature ${pending.feature} was ${isRevision ? "revised" : "planned"} but failed validation.`, "warning");
           return;
         }
 
         const registry = await loadRegistry(pending.specsRoot, pending.feature);
-
-        // Mark feature as pending review before opening viewer
-        registry.review = defaultReviewRecord();
+        markReviewPending(pending.specsRoot, pending.feature, registry);
         await saveRegistry(pending.specsRoot, pending.feature, registry);
 
         const docs = await getFeatureReviewDocuments(pending.specsRoot, pending.feature);
 
-        ctx.ui.notify(`Feature ${pending.feature} planned. Opening review viewer...`, "info");
+        ctx.ui.notify(`Feature ${pending.feature} ${isRevision ? "revised" : "planned"}. Opening review viewer...`, "info");
         emitInfo(pi, [
-          `Feature planning for **${pending.feature}**: APPROVED`,
+          `Feature ${isRevision ? "revision" : "planning"} for **${pending.feature}**: APPROVED`,
           "",
-          "The spec and execution plan are ready for your review.",
+          isRevision
+            ? "The spec package was updated from review feedback and is ready for another pass."
+            : "The spec and execution plan are ready for your review.",
           docs.length > 0
             ? `Documents ready: ${docs.map((d) => d.label).join(", ")}`
             : "No documents found.",
@@ -111,30 +116,34 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
           "Opening review viewer in browser...",
         ].join("\n"));
 
-        // Open the review viewer
         const result = await openFeatureReview(pi, pending.feature, pending.specsRoot);
 
         if (result?.action === "approved") {
-          // Reload registry (may have been updated by viewer)
           const updatedRegistry = await loadRegistry(pending.specsRoot, pending.feature);
-          const choice = await ctx.ui.select(`Feature ${pending.feature} approved`, [
-            "Start first ticket",
-            "Show feature status",
-            "Stop here",
-          ]);
-          if (choice === "Start first ticket") {
-            await startPreparedNextTicket(pi, pending.feature, pending.cwd, pending.specsRoot);
-          } else if (choice === "Show feature status") {
-            emitInfo(pi, renderStatus(updatedRegistry));
-          }
+          emitInfo(pi, [
+            `Feature **${pending.feature}** approved.`,
+            "",
+            "Starting implementation automatically ticket by ticket.",
+            "",
+            renderStatus(updatedRegistry),
+          ].join("\n"));
+          ctx.ui.notify(`Feature ${pending.feature} approved. Starting implementation...`, "info");
+          await startPreparedNextTicket(pi, pending.feature, pending.cwd, pending.specsRoot);
         } else if (result?.action === "changes_requested") {
           emitInfo(pi, [
             `Feature **${pending.feature}**: changes requested.`,
             "",
             `Feedback: ${result.comment}`,
             "",
-            "Update the docs and run `/review-feature" + ` ${pending.feature}` + "` to re-review.",
+            "You can revise the docs now or later.",
           ].join("\n"));
+          const choice = await ctx.ui.select(`Feature ${pending.feature} needs changes`, [
+            "Revise docs now",
+            "Leave for manual revision",
+          ]);
+          if (choice === "Revise docs now") {
+            await reviseFeatureFromFeedback(pi, pending.feature, pending.specsRoot, pending.cwd, result.comment);
+          }
         } else {
           emitInfo(pi, [
             `Feature **${pending.feature}** is pending review.`,
@@ -142,6 +151,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
             `Run \`/review-feature ${pending.feature}\` to open the viewer.`,
             "Run \`/approve-feature ${pending.feature}\` for quick approval.",
             "Run \`/request-feature-changes ${pending.feature} <comment>\` to request changes.",
+            "Run \`/revise-feature ${pending.feature} <feedback>\` to apply review feedback with the agent.",
           ].join("\n"));
         }
         return;
@@ -157,6 +167,10 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       const label = outcomeLabel(parsed.status);
       emitInfo(pi, `Auto-updated ${pending.ticketId} for ${pending.feature}: ${label}${parsed.note ? `\n${parsed.note}` : ""}`);
       ctx.ui.notify(`Ticket ${pending.ticketId}: ${label}`, parsed.status === "blocked" ? "warning" : "info");
+
+      if (parsed.status === "done") {
+        await startPreparedNextTicket(pi, pending.feature, pending.cwd, pending.specsRoot);
+      }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       ctx.ui.notify(`Could not auto-update ticket: ${message}`, "error");
@@ -384,6 +398,39 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     },
   });
 
+  pi.registerCommand("revise-feature", {
+    description: "Revise planned feature docs from review feedback and reopen review",
+    getArgumentCompletions: createFeatureCompletions,
+    handler: async (args, ctx) => {
+      if (!ctx.isIdle()) {
+        ctx.ui.notify("Agent is busy. Wait until it finishes.", "warning");
+        return;
+      }
+
+      const trimmed = args.trim();
+      const [featureArg, ...feedbackParts] = trimmed ? trimmed.split(/\s+/) : [];
+      const config = await loadConfig(ctx.cwd);
+      const specsRoot = resolveSpecsRoot(ctx.cwd, config);
+      const feature = await resolveFeatureSlug(featureArg || "", specsRoot, "Choose feature", ctx);
+      if (!feature) return;
+
+      let feedback = feedbackParts.join(" ").trim();
+      if (!feedback) {
+        feedback = await ctx.ui.input(
+          `What should change in ${feature}?`,
+          "Describe the review feedback to apply to the docs and tickets...",
+        ) || "";
+      }
+
+      if (!feedback.trim()) {
+        ctx.ui.notify("Feedback is required to revise a feature.", "warning");
+        return;
+      }
+
+      await reviseFeatureFromFeedback(pi, feature, specsRoot, ctx.cwd, feedback.trim());
+    },
+  });
+
   pi.registerCommand("feature-profile", {
     description: "Show or set the execution profile for a feature",
     getArgumentCompletions: async (prefix: string) => {
@@ -575,6 +622,28 @@ async function launchTicketExecution(
 
   setPendingExecution({ kind: "ticket-execution", feature, ticketId, phase, cwd, specsRoot });
   pi.sendUserMessage(message);
+}
+
+async function reviseFeatureFromFeedback(
+  pi: ExtensionAPI,
+  feature: string,
+  specsRoot: string,
+  cwd: string,
+  feedback: string,
+): Promise<void> {
+  const config = await loadConfig(cwd);
+  const authoringSkills = resolveAuthoringSkills(config);
+  const tddEnabled = resolveTddEnabled(config);
+  const availableProfiles = Object.keys(config.profiles || { default: {} });
+
+  emitInfo(pi, [
+    `Revising feature **${feature}** from review feedback.`,
+    "",
+    `Feedback: ${feedback}`,
+  ].join("\n"));
+
+  setPendingExecution({ kind: "feature-revision", feature, cwd, specsRoot, feedback });
+  pi.sendUserMessage(buildFeatureRevisionPrompt(feature, specsRoot, feedback, authoringSkills, tddEnabled, availableProfiles));
 }
 
 async function startFeatureFromDescription(

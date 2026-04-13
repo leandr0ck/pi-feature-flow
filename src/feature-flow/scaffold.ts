@@ -1,5 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { renderExecutionPlanTemplate } from "../execution-plan-template.js";
+import { renderTicketTemplate } from "../ticket-template.js";
 
 export async function pathExists(targetPath: string): Promise<boolean> {
   try {
@@ -66,7 +68,15 @@ export async function scaffoldFeature(specsRoot: string, feature: string, includ
     if (!(await pathExists(starterPath))) {
       await fs.writeFile(
         starterPath,
-        `# ${starterId} — Initial implementation slice\n\n## Goal\nDescribe the first thin slice for ${feature}.\n\n- Profile: default\n- Requires: none\n\n## Acceptance Criteria\n- Define one verifiable outcome for this first ticket.\n`,
+        renderTicketTemplate({
+          id: starterId,
+          title: "Initial implementation slice",
+          goal: `Describe the first thin slice for ${feature}.`,
+          profile: "default",
+          requires: [],
+          implementationNotes: ["Keep the ticket focused on one narrow vertical slice."],
+          acceptanceCriteria: ["Define one verifiable outcome for this first ticket."],
+        }),
         "utf8",
       );
       created.push(path.relative(specsRoot, starterPath));
@@ -93,15 +103,7 @@ function scaffoldFileTemplate(fileName: string, feature: string): string {
   }
 
   if (fileName === "02-execution-plan.md") {
-    return [
-      `# ${feature} execution plan`,
-      "",
-      "## Planned Tickets",
-      `- ${feature}: break the work into tickets under ./tickets`,
-      "",
-      "## Notes",
-      "- Keep ticket scope small and dependency-aware.",
-    ].join("\n");
+    return renderExecutionPlanTemplate(feature);
   }
 
   return `# ${feature}\n\nAdd content for ${fileName}.\n`;

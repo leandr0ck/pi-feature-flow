@@ -121,7 +121,9 @@ export type ValidationIssue = {
     | "missing-dependency"
     | "dependency-cycle"
     | "orphan-ticket"
-    | "missing-ticket-profile";
+    | "missing-ticket-profile"
+    | "ticket-template-mismatch"
+    | "execution-plan-template-mismatch";
   message: string;
   ticketId?: string;
   filePath?: string;

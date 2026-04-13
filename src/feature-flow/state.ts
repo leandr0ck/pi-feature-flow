@@ -8,6 +8,13 @@ export type PendingExecution =
       specsRoot: string;
     }
   | {
+      kind: "feature-revision";
+      feature: string;
+      cwd: string;
+      specsRoot: string;
+      feedback: string;
+    }
+  | {
       kind: "ticket-execution";
       feature: string;
       ticketId: string;
