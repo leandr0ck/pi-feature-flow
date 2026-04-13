@@ -3,11 +3,32 @@
   "ticketsDirName": "tickets",
   "registryFile": "03-ticket-registry.json",
   "featureSelectorTitle": "Choose feature",
+  "requiredSpecFiles": ["01-master-spec.md", "02-execution-plan.md"],
   "executionMode": "chain-message",
   "executionTarget": "ticket-tdd-execution",
+  "executionPromptTemplates": {
+    "start": "Use the project chain \"{target}\" now.\nInput: feature={feature}; ticket={ticket}\nPhase: {phase}\nExecute only that ticket.\n{status_request}",
+    "resume": "Resume ticket {ticket} for feature {feature}. Keep scope strict.\n{status_request}",
+    "retry": "Retry ticket {ticket} for feature {feature}. Focus only on unresolved issues.\n{status_request}"
+  },
   "executionStatusRequest": "When you finish, clearly say whether the result is APPROVED, BLOCKED, or NEEDS-FIX.",
+  "statusParsing": {
+    "enabled": true,
+    "approved": ["APPROVED"],
+    "blocked": ["BLOCKED"],
+    "needsFix": ["NEEDS-FIX"],
+    "maxMessagesToInspect": 6
+  },
   "dependencyParsing": {
     "mode": "requires-line",
-    "requiresLabel": "Requires"
+    "requiresLabel": "Requires",
+    "frontmatterField": "requires",
+    "customPattern": "^-\\s*Depends on:\\s*(.+)$",
+    "splitPattern": ","
+  },
+  "scaffold": {
+    "createStarterTicket": true,
+    "starterTicketId": "STK-001",
+    "starterTicketTitle": "Initial implementation slice"
   }
 }

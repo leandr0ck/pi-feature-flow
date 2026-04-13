@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { FeatureTicketFlowConfig, TicketRecord } from "./types";
+import type { FeatureTicketFlowConfig, TicketRecord } from "./types.js";
 
 export async function discoverTickets(ticketsDir: string, config: FeatureTicketFlowConfig): Promise<TicketRecord[]> {
   const files = (await fs.readdir(ticketsDir)).filter((file) => file.endsWith(".md")).sort();
@@ -16,11 +16,12 @@ export async function discoverTickets(ticketsDir: string, config: FeatureTicketF
         dependencies: parseDependencies(content, config),
         status: "pending" as const,
         updatedAt: new Date().toISOString(),
-      };
+        runs: [],
+      } satisfies TicketRecord;
     }),
   );
 
-  return tickets.sort((a, b) => a.id.localeCompare(b.id));
+  return tickets.sort((a: TicketRecord, b: TicketRecord) => a.id.localeCompare(b.id));
 }
 
 export function parseTitle(content: string, fallbackId: string) {
@@ -34,22 +35,35 @@ export function parseTitle(content: string, fallbackId: string) {
 export function parseDependencies(content: string, config: FeatureTicketFlowConfig) {
   if (config.dependencyParsing.mode === "frontmatter") {
     const frontmatter = content.match(/^---\n([\s\S]*?)\n---/);
-    const line = frontmatter?.[1].split("\n").find((row) => row.trim().startsWith("requires:"));
+    const field = config.dependencyParsing.frontmatterField || "requires";
+    const line = frontmatter?.[1]
+      .split("\n")
+      .find((row) => row.trim().toLowerCase().startsWith(`${field.toLowerCase()}:`));
     if (!line) return [];
     const raw = line.split(":").slice(1).join(":").trim();
-    return normalizeDependencyList(raw);
+    return normalizeDependencyList(raw, config.dependencyParsing.splitPattern);
+  }
+
+  if (config.dependencyParsing.mode === "custom") {
+    const pattern = config.dependencyParsing.customPattern;
+    if (!pattern) return [];
+
+    const match = content.match(new RegExp(pattern, "m"));
+    return normalizeDependencyList(match?.[1] || "", config.dependencyParsing.splitPattern);
   }
 
   const label = escapeRegExp(config.dependencyParsing.requiresLabel);
   const match = content.match(new RegExp(`^-\\s*${label}:\\s*(.+)$`, "m"));
-  return normalizeDependencyList(match?.[1] || "");
+  return normalizeDependencyList(match?.[1] || "", config.dependencyParsing.splitPattern);
 }
 
-function normalizeDependencyList(raw: string) {
+function normalizeDependencyList(raw: string, splitPattern = ",") {
   const value = raw.trim();
   if (!value || value.toLowerCase() === "none" || value === "-") return [];
+
+  const splitter = splitPattern === "," ? /,/ : new RegExp(splitPattern);
   return value
-    .split(",")
+    .split(splitter)
     .map((part) => part.trim())
     .filter(Boolean);
 }
