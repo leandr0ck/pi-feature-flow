@@ -1,0 +1,13 @@
+{
+  "specsRoot": "../docs-vendraia/technical-specs",
+  "ticketsDirName": "tickets",
+  "registryFile": "03-ticket-registry.json",
+  "featureSelectorTitle": "Choose feature",
+  "executionMode": "chain-message",
+  "executionTarget": "ticket-tdd-execution",
+  "executionStatusRequest": "When you finish, clearly say whether the result is APPROVED, BLOCKED, or NEEDS-FIX.",
+  "dependencyParsing": {
+    "mode": "requires-line",
+    "requiresLabel": "Requires"
+  }
+}
