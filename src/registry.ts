@@ -81,6 +81,7 @@ async function discoverTickets(ticketsDir: string): Promise<TicketRecord[]> {
         title: parseTitle(content, id),
         path: absolutePath,
         dependencies: parseDependencies(content),
+        profileName: parseProfileName(content),
         status: "pending" as const,
         updatedAt: new Date().toISOString(),
         runs: [],
@@ -101,6 +102,7 @@ function parseTitle(content: string, fallbackId: string): string {
 
 // Convention: `- Requires: TKT-001, TKT-002` or `- Requires: none`
 const REQUIRES_LABEL = "Requires";
+const PROFILE_LABEL = "Profile";
 const DEPENDENCY_SPLIT_PATTERN = ",";
 
 function parseDependencies(content: string): string[] {
@@ -112,6 +114,12 @@ function parseDependencies(content: string): string[] {
 
   const splitter = DEPENDENCY_SPLIT_PATTERN === "," ? /,/ : new RegExp(DEPENDENCY_SPLIT_PATTERN);
   return value.split(splitter).map((part) => part.trim()).filter(Boolean);
+}
+
+function parseProfileName(content: string): string | undefined {
+  const match = content.match(new RegExp(`^-\\s*${PROFILE_LABEL}:\\s*(.+)$`, "m"));
+  const value = match?.[1]?.trim();
+  return value || undefined;
 }
 
 // ─── Registry merge ───────────────────────────────────────────────────────────
@@ -130,6 +138,7 @@ function mergeRegistry(feature: string, discoveredTickets: TicketRecord[], exist
       const previous = existingMap.get(ticket.id);
       return {
         ...ticket,
+        profileName: ticket.profileName || previous?.profileName,
         status: previous?.status || "pending",
         blockedReason: previous?.blockedReason,
         startedAt: previous?.startedAt,

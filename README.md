@@ -40,9 +40,10 @@ pi install git:github.com/leandr0ck/pi-feature-flow
       ...
 ```
 
-Each ticket must declare dependencies with a line like:
+Each ticket must declare its execution profile and dependencies with lines like:
 
 ```md
+- Profile: frontend
 - Requires: STK-001
 ```
 
@@ -106,12 +107,12 @@ profiles:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `specsRoot` | `string` | `"./docs/technical-specs"` | Root directory containing feature folders. |
-| `defaultProfile` | `string` | `"default"` | Profile used when no profile rule matches. |
+| `defaultProfile` | `string` | `"default"` | Fallback profile used when a ticket does not declare a profile or when a feature-level fallback is set manually. |
 | `tdd` | `boolean` | `false` | Adds TDD-oriented guidance to planning and execution prompts. The project is responsible for having a usable test setup. |
 | `authoringSkills.productRequirementsSkill` | `string` | `prd-development` | Skill used for product-facing requirements and problem framing. |
 | `authoringSkills.requirementsRefinementSkill` | `string` | `spec-driven-workflow` | Skill used to refine requirements into clearer FR/NFR/acceptance criteria. |
 | `authoringSkills.technicalDesignSkill` | `string` | `technical-specification` | Skill used for deeper technical design when needed. |
-| `profiles.<name>.matchAny` | `string[]` | `[]` | Keywords used to route a feature to a profile. |
+| `profiles.<name>.matchAny` | `string[]` | `[]` | Optional legacy routing keywords. Ticket-level `- Profile:` is the primary routing mechanism. |
 | `profiles.<name>.preferSubagents` | `boolean` | `true` | If false, disables subagent-first guidance for that profile. |
 | `profiles.<name>.agents.<role>.agent` | `string` | builtin role name | Subagent name to use for planner/worker/reviewer. |
 | `profiles.<name>.agents.<role>.model` | `string` | unset | Preferred model for that role. |
@@ -135,16 +136,18 @@ profiles:
 
 ## Profiles
 
-Profiles let you choose different agent/model preferences by feature type.
+Profiles let you choose different agent/model preferences per ticket.
+
+`/feature` stays profile-agnostic. The planner should assign a `- Profile:` to each ticket so mixed frontend/backend features can execute correctly.
 
 Example:
 - `frontend` profile for UI and onboarding work
 - `backend` profile for API, queue, and DB work
 - `direct-mode` profile when you want no subagent delegation
 
-The selected profile is persisted in the feature registry, so later `/next-ticket` or `/start-feature` runs keep using the same profile.
+The selected profile for each ticket is read from the ticket file. A feature-level profile can still be persisted in the registry as a manual fallback via `/feature-profile`, but ticket-level `- Profile:` takes precedence.
 
-To change a profile manually:
+To set a feature-level fallback profile manually:
 
 ```bash
 /feature-profile my-feature frontend
@@ -158,12 +161,13 @@ To inspect the current profile and options:
 
 ## Suggested workflow
 
-1. Use `/feature <description>`.
+1. Start with `/feature <description>`.
 2. Review the generated master spec and execution plan.
-3. Approve planning.
-4. Let the package start the first ticket.
-5. Continue with `/next-ticket <feature>` until the feature is done.
-6. Use `/ticket-done`, `/ticket-blocked`, or `/ticket-needs-fix` if you need to override the current ticket state.
+3. Confirm each generated ticket has a `- Profile:` and `- Requires:` line.
+4. Approve planning.
+5. Let the package start the first ticket.
+6. Continue with `/next-ticket <feature>` until the feature is done.
+7. Use `/ticket-done`, `/ticket-blocked`, or `/ticket-needs-fix` if you need to override the current ticket state.
 
 ## Validation rules
 
@@ -178,6 +182,7 @@ To inspect the current profile and options:
 | `invalid-ticket-id` | warning | Ticket id doesn't match recommended pattern (`STK-001` or `T1`). |
 | `duplicate-dependency` | warning | The same dependency is listed twice for one ticket. |
 | `orphan-ticket` | warning | A ticket has no dependencies and nothing depends on it. |
+| `missing-ticket-profile` | error | A ticket is missing a required `- Profile:` line. |
 
 ## Publish
 

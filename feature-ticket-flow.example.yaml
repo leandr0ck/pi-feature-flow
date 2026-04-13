@@ -1,3 +1,12 @@
+# `/feature` stays profile-agnostic:
+# /feature Build an onboarding flow with checklist and welcome email
+#
+# Ticket files should declare their own execution target:
+# - Profile: frontend
+# - Requires: STK-001
+#
+# `defaultProfile` is used as a fallback when a ticket does not declare one
+# or when you manually set a feature-level fallback with /feature-profile.
 specsRoot: ./docs/technical-specs
 defaultProfile: default
 tdd: false

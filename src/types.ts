@@ -19,6 +19,7 @@ export type TicketRecord = {
   title: string;
   path: string;
   dependencies: string[];
+  profileName?: string;
   status: TicketStatus;
   blockedReason?: string;
   startedAt?: string;
@@ -102,7 +103,8 @@ export type ValidationIssue = {
     | "duplicate-dependency"
     | "missing-dependency"
     | "dependency-cycle"
-    | "orphan-ticket";
+    | "orphan-ticket"
+    | "missing-ticket-profile";
   message: string;
   ticketId?: string;
   filePath?: string;

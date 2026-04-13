@@ -22,7 +22,6 @@ let pendingExecution:
   | {
       kind: "feature-plan";
       feature: string;
-      profileName: string;
       cwd: string;
       specsRoot: string;
     }
@@ -66,11 +65,9 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
           return;
         }
 
-        const registry = await loadRegistry(pending.specsRoot, pending.feature);
-        registry.profileName = pending.profileName;
-        await saveRegistry(pending.specsRoot, pending.feature, registry);
+        await loadRegistry(pending.specsRoot, pending.feature);
 
-        ctx.ui.notify(`Feature ${pending.feature} planned with profile ${pending.profileName}. Starting first ticket...`, "info");
+        ctx.ui.notify(`Feature ${pending.feature} planned. Starting first ticket...`, "info");
         await startPreparedNextTicket(pi, pending.feature, pending.cwd, pending.specsRoot);
         return;
       }
@@ -275,7 +272,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       if (nextChoice === "Retry now") {
         startTicketRun(registry, current.id, "retry");
         await saveRegistry(specsRoot, feature, registry);
-        await launchTicketExecution(pi, feature, current.id, ctx.cwd, specsRoot, "retry");
+        await launchTicketExecution(pi, feature, current.id, ctx.cwd, specsRoot, "retry", current.profileName, registry.profileName);
       } else if (nextChoice === "Show feature status") {
         const refreshed = await loadRegistry(specsRoot, feature);
         emitInfo(pi, renderStatus(refreshed));
@@ -334,7 +331,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       if (!feature) return;
 
       const registry = await loadRegistry(specsRoot, feature);
-      const current = registry.profileName || "(none — will use default or text matching)";
+      const current = registry.profileName || "(none — tickets must declare - Profile:, otherwise default profile is used as fallback)";
 
       if (!profileArg) {
         const profileLines = [
@@ -387,7 +384,7 @@ async function runNextTicketFlow(pi: ExtensionAPI, feature: string, ctx: { cwd: 
     if (choice.startsWith("Resume ")) {
       startTicketRun(registry, current.id, "resume");
       await saveRegistry(specsRoot, feature, registry);
-      await launchTicketExecution(pi, feature, current.id, ctx.cwd, specsRoot, "resume");
+      await launchTicketExecution(pi, feature, current.id, ctx.cwd, specsRoot, "resume", current.profileName, registry.profileName);
       return;
     }
     if (choice.includes("done")) {
@@ -432,7 +429,7 @@ async function startPreparedNextTicket(pi: ExtensionAPI, feature: string, cwd: s
   startTicketRun(refreshed, next.id, mode);
   await saveRegistry(specsRoot, feature, refreshed);
   emitInfo(pi, `Starting ${next.id} — ${next.title}`);
-  await launchTicketExecution(pi, feature, next.id, cwd, specsRoot, mode, refreshed.profileName);
+  await launchTicketExecution(pi, feature, next.id, cwd, specsRoot, mode, next.profileName, refreshed.profileName);
 }
 
 async function launchTicketExecution(
@@ -442,14 +439,15 @@ async function launchTicketExecution(
   cwd: string,
   specsRoot: string,
   phase: "start" | "resume" | "retry",
-  persistedProfileName?: string,
+  ticketProfileName?: string,
+  featureProfileName?: string,
 ) {
   const featureDir = path.join(specsRoot, feature);
   const ticketPath = path.join(featureDir, "tickets", `${ticketId}.md`);
   const masterSpecPath = path.join(featureDir, "01-master-spec.md");
   const executionPlanPath = path.join(featureDir, "02-execution-plan.md");
   const config = await loadConfig(cwd);
-  const resolvedProfile = resolveProfileForFeature(config, persistedProfileName, feature);
+  const resolvedProfile = resolveProfileForFeature(config, ticketProfileName, featureProfileName);
   const { name: profileName, profile } = resolvedProfile;
   const tddEnabled = resolveTddEnabled(config);
 
@@ -490,7 +488,11 @@ type FeatureFlowContext = {
   };
 };
 
-async function startFeatureFromDescription(pi: ExtensionAPI, description: string, ctx: FeatureFlowContext): Promise<boolean> {
+async function startFeatureFromDescription(
+  pi: ExtensionAPI,
+  description: string,
+  ctx: FeatureFlowContext,
+): Promise<boolean> {
   const trimmed = description.trim();
   if (!trimmed) return false;
 
@@ -500,15 +502,14 @@ async function startFeatureFromDescription(pi: ExtensionAPI, description: string
   const baseSlug = deriveFeatureSlug(trimmed);
   const feature = await ensureUniqueFeatureSlug(specsRoot, baseSlug);
   const created = await scaffoldFeature(specsRoot, feature);
-  const { name: profileName, profile } = resolveExecutionProfile(config, `${feature} ${trimmed}`);
   const authoringSkills = resolveAuthoringSkills(config);
   const tddEnabled = resolveTddEnabled(config);
 
   emitInfo(pi, `Initialized ${feature}.\n${created.map((p) => `- ${p}`).join("\n")}`);
-  ctx.ui.notify(`Created feature ${feature}. Planning spec and tickets with profile ${profileName}...`, "info");
+  ctx.ui.notify(`Created feature ${feature}. Planning spec and tickets...`, "info");
 
-  pendingExecution = { kind: "feature-plan", feature, profileName, cwd, specsRoot };
-  pi.sendUserMessage(buildFeaturePlanningPrompt(feature, specsRoot, trimmed, profileName, profile, authoringSkills, tddEnabled));
+  pendingExecution = { kind: "feature-plan", feature, cwd, specsRoot };
+  pi.sendUserMessage(buildFeaturePlanningPrompt(feature, specsRoot, trimmed, config, authoringSkills, tddEnabled));
   return true;
 }
 
@@ -516,16 +517,15 @@ function buildFeaturePlanningPrompt(
   feature: string,
   specsRoot: string,
   description: string,
-  profileName: string,
-  profile: ReturnType<typeof resolveExecutionProfile>["profile"],
+  config: Awaited<ReturnType<typeof loadConfig>>,
   authoringSkills: ReturnType<typeof resolveAuthoringSkills>,
   tddEnabled: boolean,
 ): string {
   const featureDir = path.join(specsRoot, feature);
+  const availableProfiles = Object.keys(config.profiles || { default: {} });
   return [
     `Run the bundled agent-driven feature intake workflow for feature "${feature}".`,
     `Feature directory: ${featureDir}`,
-    `Execution profile: ${profileName}`,
     "User request:",
     description,
     "",
@@ -552,7 +552,6 @@ function buildFeaturePlanningPrompt(
     "- Complex system → use productRequirementsSkill + requirementsRefinementSkill + technicalDesignSkill.",
     "",
     "Treat `01-master-spec.md` as the principal document: PRD Lite for simple work, PRD-first master spec for medium/complex work.",
-    ...buildSubagentGuidance(profile, "planning"),
     "",
     "Planning rules:",
     "- Classify the request as simple, medium, or complex before writing specs.",
@@ -567,6 +566,8 @@ function buildFeaturePlanningPrompt(
       : []),
     "- Create small, dependency-aware tickets as thin vertical slices.",
     "- Every ticket must include a `- Requires:` line.",
+    "- Every ticket must include a `- Profile:` line with exactly one execution profile name.",
+    `- Allowed ticket profiles: ${availableProfiles.join(", ")}`,
     "- Use STK-001, STK-002, ... ticket ids.",
     "- Keep all generated files inside the feature directory only.",
     "",
@@ -578,13 +579,16 @@ function buildFeaturePlanningPrompt(
 
 function resolveProfileForFeature(
   config: Awaited<ReturnType<typeof loadConfig>>,
-  persistedProfileName: string | undefined,
-  featureText: string,
+  ticketProfileName?: string,
+  featureProfileName?: string,
 ): ReturnType<typeof resolveExecutionProfile> {
-  if (persistedProfileName && config.profiles?.[persistedProfileName]) {
-    return resolveExecutionProfileByName(config, persistedProfileName);
+  if (ticketProfileName && config.profiles?.[ticketProfileName]) {
+    return resolveExecutionProfileByName(config, ticketProfileName);
   }
-  return resolveExecutionProfile(config, featureText);
+  if (featureProfileName && config.profiles?.[featureProfileName]) {
+    return resolveExecutionProfileByName(config, featureProfileName);
+  }
+  return resolveExecutionProfileByName(config, config.defaultProfile || "default");
 }
 
 function buildSubagentGuidance(
@@ -647,14 +651,28 @@ async function validateBeforeExecution(
   pi: ExtensionAPI,
   feature: string,
   specsRoot: string,
-  ctx: { ui: { notify: Function } },
+  ctx: { cwd?: string; ui: { notify: Function } },
 ): Promise<boolean> {
   const validation = await validateFeature(specsRoot, feature);
-  if (validation.valid) return true;
+  if (!validation.valid) {
+    emitInfo(pi, renderValidation(validation));
+    ctx.ui.notify(`Feature ${feature} failed validation. Run /ticket-validate ${feature} for details.`, "warning");
+    return false;
+  }
 
-  emitInfo(pi, renderValidation(validation));
-  ctx.ui.notify(`Feature ${feature} failed validation. Run /ticket-validate ${feature} for details.`, "warning");
-  return false;
+  const config = await loadConfig(ctx.cwd || process.cwd());
+  const validProfiles = new Set(Object.keys(config.profiles || { default: {} }));
+  const registry = await loadRegistry(specsRoot, feature);
+  const invalidProfiles = registry.tickets.filter((ticket) => ticket.profileName && !validProfiles.has(ticket.profileName));
+
+  if (invalidProfiles.length > 0) {
+    const details = invalidProfiles.map((ticket) => `- ${ticket.id}: unknown profile ${ticket.profileName}`).join("\n");
+    emitInfo(pi, `Feature: ${feature}\nValidation: failed\n\nErrors:\n${details}`);
+    ctx.ui.notify(`Feature ${feature} has tickets with unknown profiles.`, "warning");
+    return false;
+  }
+
+  return true;
 }
 
 // ─── Feature slug resolution ──────────────────────────────────────────────────
@@ -754,7 +772,7 @@ async function scaffoldFeature(specsRoot: string, feature: string) {
   if (!(await pathExists(starterPath))) {
     await fs.writeFile(
       starterPath,
-      `# ${starterId} — Initial implementation slice\n\n## Goal\nDescribe the first thin slice for ${feature}.\n\n- Requires: none\n\n## Acceptance Criteria\n- Define one verifiable outcome for this first ticket.\n`,
+      `# ${starterId} — Initial implementation slice\n\n## Goal\nDescribe the first thin slice for ${feature}.\n\n- Profile: default\n- Requires: none\n\n## Acceptance Criteria\n- Define one verifiable outcome for this first ticket.\n`,
       "utf8",
     );
     created.push(path.relative(specsRoot, starterPath));

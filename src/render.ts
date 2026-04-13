@@ -102,7 +102,8 @@ function formatTicketLines(tickets: TicketRecord[], registry?: TicketRegistry): 
         extra += ` [${lastRun.mode}${lastRun.outcome ? ` -> ${lastRun.outcome}` : ""}]`;
       }
 
-      return `- ${ticket.id}: ${ticket.title}${extra}`;
+      const profile = ticket.profileName ? ` [profile=${ticket.profileName}]` : "";
+      return `- ${ticket.id}: ${ticket.title}${profile}${extra}`;
     })
     .join("\n");
 }

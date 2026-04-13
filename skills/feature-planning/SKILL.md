@@ -43,7 +43,7 @@ Use `feature-planning` as the orchestration skill and normalize the document-aut
 1. Read any existing files in the target feature directory first.
 2. Keep everything inside the target feature folder.
 3. Prefer thin vertical slices over architecture-first decomposition.
-4. Every ticket must include a `- Requires:` line.
+4. Every ticket must include both a `- Profile:` line and a `- Requires:` line.
 5. Ticket ids should be sequential: `STK-001`, `STK-002`, ...
 6. Keep ticket scope independently verifiable.
 7. Do not start implementing app code during planning unless the parent prompt explicitly asks for it.
@@ -98,6 +98,7 @@ Include at least:
 Each ticket should include:
 - title
 - goal
+- `- Profile:` line with exactly one execution profile name
 - `- Requires:` line
 - implementation notes if useful
 - acceptance criteria
@@ -116,5 +117,6 @@ Avoid tickets that are only:
 ## Finish state
 
 When the feature package is coherent and ready for execution, explicitly say `APPROVED`.
+Ticket profiles should be explicit so mixed frontend/backend features route correctly during execution.
 If critical information is missing, say `BLOCKED` and explain why.
 If the plan exists but needs another pass, say `NEEDS-FIX`.

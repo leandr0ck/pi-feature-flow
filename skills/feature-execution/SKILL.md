@@ -14,6 +14,8 @@ Read these before changing code:
 - feature execution plan
 - the target ticket file
 
+Use the ticket's `- Profile:` line as the execution routing source of truth.
+
 ## Execution rules
 
 1. Implement only the assigned ticket.

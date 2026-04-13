@@ -57,6 +57,11 @@ async function seedFeature(
   }
 }
 
+async function writeFeatureConfig(cwd: string, yaml: string) {
+  await mkdir(path.join(cwd, ".pi"), { recursive: true });
+  await writeFile(path.join(cwd, ".pi", "feature-ticket-flow.yaml"), yaml, "utf8");
+}
+
 describe("feature-ticket-flow integration", () => {
   let t: TestSession | undefined;
 
@@ -79,6 +84,35 @@ describe("feature-ticket-flow integration", () => {
     expect(masterSpec).toContain("demo-feature");
     expect(executionPlan).toContain("execution plan");
     expect(starterTicket).toContain("STK-001");
+    expect(starterTicket).toContain("- Profile: default");
+  });
+
+  it("uses /feature without requiring a profile and asks for ticket-level profiles", async () => {
+    t = await createTestSession({
+      extensions: [EXTENSION_PATH],
+      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+    });
+
+    await writeFeatureConfig(
+      t.cwd,
+      [
+        "profiles:",
+        "  default: {}",
+        "  frontend: {}",
+        "  backend: {}",
+      ].join("\n"),
+    );
+
+    patchHarnessCompatibility(t);
+    await t.run(when("/feature build onboarding flow", []));
+    await settleSession(t);
+
+    const userMessages = t.events.messages.filter((message) => message.role === "user").map(messageText).join("\n\n");
+    const notifications = t.events.uiCallsFor("notify");
+
+    expect(userMessages).toContain("Every ticket must include a `- Profile:` line");
+    expect(userMessages).toContain("Allowed ticket profiles: default, frontend, backend");
+    expect(notifications.some((call) => String(call.args[0]).includes("Planning spec and tickets..."))).toBe(true);
   });
 
   it("blocks /start-feature when validation fails", async () => {
@@ -93,7 +127,7 @@ describe("feature-ticket-flow integration", () => {
     await writeFile(path.join(featureRoot, "01-master-spec.md"), "# broken-feature\n", "utf8");
     await writeFile(
       path.join(ticketsRoot, "STK-001.md"),
-      "# STK-001 — Missing dependency\n\n- Requires: STK-999\n",
+      "# STK-001 — Missing dependency\n\n- Profile: backend\n- Requires: STK-999\n",
       "utf8",
     );
 
@@ -114,7 +148,7 @@ describe("feature-ticket-flow integration", () => {
     await seedFeature(t.cwd, "demo", [
       {
         id: "STK-001",
-        body: "# STK-001 — First ticket\n\n- Requires: none\n",
+        body: "# STK-001 — First ticket\n\n- Profile: default\n- Requires: none\n",
       },
     ]);
 
@@ -137,6 +171,49 @@ describe("feature-ticket-flow integration", () => {
     expect(ticket?.runs[0]?.outcome).toBe("done");
   });
 
+  it("uses the ticket profile before the feature fallback profile during execution", async () => {
+    t = await createTestSession({
+      extensions: [EXTENSION_PATH],
+      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+      mockUI: { select: 0 },
+    });
+
+    await writeFeatureConfig(
+      t.cwd,
+      [
+        "profiles:",
+        "  default: {}",
+        "  frontend: {}",
+        "  backend: {}",
+      ].join("\n"),
+    );
+
+    await seedFeature(t.cwd, "profile-routing", [
+      {
+        id: "STK-001",
+        body: "# STK-001 — Backend ticket\n\n- Profile: backend\n- Requires: none\n",
+      },
+    ]);
+
+    const { specsRoot } = await featurePaths(t.cwd, "profile-routing");
+    const registry = await loadRegistry(specsRoot, "profile-routing");
+    registry.profileName = "frontend";
+    const fs = await import("node:fs/promises");
+    await fs.writeFile(path.join(specsRoot, "profile-routing", "03-ticket-registry.json"), JSON.stringify(registry, null, 2) + "\n", "utf8");
+
+    patchHarnessCompatibility(t);
+    await t.run(
+      when("/start-feature profile-routing", [
+        says("APPROVED\nCompleted successfully."),
+      ]),
+    );
+
+    await settleSession(t);
+
+    const userMessages = t.events.messages.filter((message) => message.role === "user").map(messageText).join("\n\n");
+    expect(userMessages).toContain("Execution profile: backend");
+  });
+
   it("prioritizes needs-fix tickets before pending ones on /next-ticket", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
@@ -147,11 +224,11 @@ describe("feature-ticket-flow integration", () => {
     await seedFeature(t.cwd, "priority", [
       {
         id: "STK-001",
-        body: "# STK-001 — Retry me\n\n- Requires: none\n",
+        body: "# STK-001 — Retry me\n\n- Profile: default\n- Requires: none\n",
       },
       {
         id: "STK-002",
-        body: "# STK-002 — Still pending\n\n- Requires: none\n",
+        body: "# STK-002 — Still pending\n\n- Profile: default\n- Requires: none\n",
       },
     ]);
 
@@ -195,7 +272,7 @@ describe("feature-ticket-flow integration", () => {
     });
 
     await seedFeature(t.cwd, "profile-test", [
-      { id: "STK-001", body: "# STK-001\n\n- Requires: none\n" },
+      { id: "STK-001", body: "# STK-001\n\n- Profile: frontend\n- Requires: none\n" },
     ]);
 
     const { specsRoot } = await featurePaths(t.cwd, "profile-test");
@@ -220,7 +297,7 @@ describe("feature-ticket-flow integration", () => {
     });
 
     await seedFeature(t.cwd, "set-profile-test", [
-      { id: "STK-001", body: "# STK-001\n\n- Requires: none\n" },
+      { id: "STK-001", body: "# STK-001\n\n- Profile: frontend\n- Requires: none\n" },
     ]);
 
     patchHarnessCompatibility(t);

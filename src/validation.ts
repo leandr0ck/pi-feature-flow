@@ -59,6 +59,7 @@ export async function validateFeature(specsRoot: string, feature: string): Promi
         title: parseTitle(content, id),
         path: absolutePath,
         dependencies: parseDependencies(content),
+        profileName: parseProfileName(content),
         status: "pending" as const,
         updatedAt: new Date().toISOString(),
         runs: [],
@@ -87,6 +88,16 @@ export async function validateFeature(specsRoot: string, feature: string): Promi
         severity: "warning",
         code: "invalid-ticket-id",
         message: `Ticket id ${ticket.id} does not match recommended pattern (STK-001 or T1).`,
+        ticketId: ticket.id,
+        filePath: ticket.path,
+      });
+    }
+
+    if (!ticket.profileName) {
+      issues.push({
+        severity: "error",
+        code: "missing-ticket-profile",
+        message: `Ticket ${ticket.id} is missing a - Profile: <name> line.`,
         ticketId: ticket.id,
         filePath: ticket.path,
       });
@@ -180,6 +191,13 @@ function parseDependencies(content: string): string[] {
 
   const splitter = DEPENDENCY_SPLIT_PATTERN === "," ? /,/ : new RegExp(DEPENDENCY_SPLIT_PATTERN);
   return value.split(splitter).map((part) => part.trim()).filter(Boolean);
+}
+
+function parseProfileName(content: string): string | undefined {
+  const PROFILE_LABEL = "Profile";
+  const match = content.match(new RegExp(`^-\\s*${PROFILE_LABEL}:\\s*(.+)$`, "m"));
+  const value = match?.[1] || "";
+  return value.trim() || undefined;
 }
 
 function detectCycles(tickets: TicketRecord[]): ValidationIssue[] {
