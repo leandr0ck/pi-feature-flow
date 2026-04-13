@@ -1,0 +1,49 @@
+specsRoot: ./docs/technical-specs
+autoCapture: true
+defaultProfile: default
+
+profiles:
+  default:
+    preferSubagents: true
+    agents:
+      planner:
+        agent: planner
+        model: anthropic/claude-sonnet-4
+        thinking: medium
+      worker:
+        agent: worker
+        model: anthropic/claude-sonnet-4
+        thinking: high
+      reviewer:
+        agent: reviewer
+        model: openai/gpt-5.4
+        thinking: medium
+
+  frontend:
+    matchAny: [ui, dashboard, page, landing, onboarding]
+    preferSubagents: true
+    agents:
+      planner:
+        model: anthropic/claude-sonnet-4
+      worker:
+        model: anthropic/claude-sonnet-4
+      reviewer:
+        model: openai/gpt-5.4
+
+  backend:
+    matchAny: [api, backend, worker, queue, cron, db, database]
+    preferSubagents: true
+    agents:
+      planner:
+        model: openai/gpt-5.4
+      worker:
+        model: anthropic/claude-sonnet-4
+      reviewer:
+        model: openai/gpt-5.4
+
+  direct-mode:
+    matchAny: [hotfix, tiny-fix, one-off]
+    preferSubagents: false
+    agents:
+      worker:
+        model: anthropic/claude-sonnet-4

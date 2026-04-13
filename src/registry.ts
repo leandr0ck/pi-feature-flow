@@ -125,6 +125,7 @@ function mergeRegistry(feature: string, discoveredTickets: TicketRecord[], exist
     feature,
     version: 1,
     updatedAt: now,
+    profileName: existing?.profileName,
     tickets: discoveredTickets.map((ticket) => {
       const previous = existingMap.get(ticket.id);
       return {

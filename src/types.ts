@@ -31,6 +31,7 @@ export type TicketRegistry = {
   feature: string;
   version: 1;
   updatedAt: string;
+  profileName?: string;
   tickets: TicketRecord[];
 };
 
@@ -43,9 +44,26 @@ export type ExecutionChainStep = {
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
+export type FeatureAgentName = "planner" | "worker" | "reviewer";
+
+export type FeatureAgentConfig = {
+  model?: string;
+  thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  agent?: string;
+};
+
+export type FeatureExecutionProfile = {
+  preferSubagents?: boolean;
+  matchAny?: string[];
+  agents?: Partial<Record<FeatureAgentName, FeatureAgentConfig>>;
+};
+
 export type FeatureTicketFlowConfig = {
   /** Root directory containing feature folders. Default: "./docs/technical-specs" */
   specsRoot: string;
+  autoCapture?: boolean;
+  defaultProfile?: string;
+  profiles?: Record<string, FeatureExecutionProfile>;
 };
 
 // ─── Validation ───────────────────────────────────────────────────────────────

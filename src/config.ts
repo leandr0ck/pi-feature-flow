@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { FeatureTicketFlowConfig } from "./types.js";
+import { parse as parseYaml } from "yaml";
+import type { FeatureAgentName, FeatureExecutionProfile, FeatureTicketFlowConfig } from "./types.js";
 
 // ─── Defaults (convention over configuration) ─────────────────────────────────
 
@@ -25,17 +26,118 @@ const DEPENDENCY_SPLIT_PATTERN = ",";
 
 // ─── Config loading ───────────────────────────────────────────────────────────
 
-const CONFIG_FILE = ".pi/feature-ticket-flow.json";
+const YAML_CONFIG_FILE = ".pi/feature-ticket-flow.yaml";
+const YML_CONFIG_FILE = ".pi/feature-ticket-flow.yml";
+const JSON_CONFIG_FILE = ".pi/feature-ticket-flow.json";
+
+const DEFAULT_PROFILE = "default";
+
+const DEFAULT_CONFIG: FeatureTicketFlowConfig = {
+  specsRoot: DEFAULT_SPECS_ROOT,
+  autoCapture: true,
+  defaultProfile: DEFAULT_PROFILE,
+  profiles: {
+    [DEFAULT_PROFILE]: {
+      preferSubagents: true,
+      agents: {
+        planner: { agent: "planner" },
+        worker: { agent: "worker" },
+        reviewer: { agent: "reviewer" },
+      },
+    },
+  },
+};
 
 export async function loadConfig(cwd: string): Promise<FeatureTicketFlowConfig> {
-  const configPath = path.resolve(cwd, CONFIG_FILE);
-  try {
-    const raw = await fs.readFile(configPath, "utf8");
-    const parsed = JSON.parse(raw) as Partial<FeatureTicketFlowConfig>;
-    return { ...parsed, specsRoot: parsed.specsRoot || DEFAULT_SPECS_ROOT };
-  } catch {
-    return { specsRoot: DEFAULT_SPECS_ROOT };
+  const candidates = [YAML_CONFIG_FILE, YML_CONFIG_FILE, JSON_CONFIG_FILE].map((file) => path.resolve(cwd, file));
+
+  for (const configPath of candidates) {
+    try {
+      const raw = await fs.readFile(configPath, "utf8");
+      const parsed = configPath.endsWith(".json")
+        ? JSON.parse(raw) as Partial<FeatureTicketFlowConfig>
+        : parseYaml(raw) as Partial<FeatureTicketFlowConfig>;
+      return normalizeConfig(parsed);
+    } catch {
+      // try next config path
+    }
   }
+
+  return normalizeConfig({});
+}
+
+function normalizeConfig(parsed: Partial<FeatureTicketFlowConfig>): FeatureTicketFlowConfig {
+  const defaultProfile = parsed.defaultProfile || DEFAULT_PROFILE;
+  const mergedProfiles: Record<string, FeatureExecutionProfile> = {
+    ...(DEFAULT_CONFIG.profiles || {}),
+    ...(parsed.profiles || {}),
+  };
+
+  return {
+    specsRoot: parsed.specsRoot || DEFAULT_SPECS_ROOT,
+    autoCapture: parsed.autoCapture ?? true,
+    defaultProfile,
+    profiles: mergedProfiles,
+  };
+}
+
+export function resolveExecutionProfile(
+  config: FeatureTicketFlowConfig,
+  text: string,
+): { name: string; profile: FeatureExecutionProfile } {
+  const profiles = config.profiles || {};
+  const haystack = text.toLowerCase();
+
+  for (const [name, profile] of Object.entries(profiles)) {
+    if (name === (config.defaultProfile || DEFAULT_PROFILE)) continue;
+    const matchAny = profile.matchAny || [];
+    if (matchAny.some((term) => haystack.includes(term.toLowerCase()))) {
+      return resolveExecutionProfileByName(config, name);
+    }
+  }
+
+  const fallbackName = config.defaultProfile || DEFAULT_PROFILE;
+  return resolveExecutionProfileByName(config, fallbackName);
+}
+
+export function resolveExecutionProfileByName(
+  config: FeatureTicketFlowConfig,
+  profileName: string,
+): { name: string; profile: FeatureExecutionProfile } {
+  const profiles = config.profiles || {};
+  const defaultName = config.defaultProfile || DEFAULT_PROFILE;
+  return {
+    name: profileName,
+    profile: mergeProfiles(profileName === defaultName ? undefined : profiles[defaultName], profiles[profileName]),
+  };
+}
+
+function mergeProfiles(base?: FeatureExecutionProfile, override?: FeatureExecutionProfile): FeatureExecutionProfile {
+  return {
+    preferSubagents: override?.preferSubagents ?? base?.preferSubagents ?? true,
+    matchAny: override?.matchAny || base?.matchAny,
+    agents: {
+      ...(base?.agents || {}),
+      ...(override?.agents || {}),
+    },
+  };
+}
+
+export function renderAgentPreferences(profile: FeatureExecutionProfile): string[] {
+  const lines: string[] = [];
+  const orderedAgents: FeatureAgentName[] = ["planner", "worker", "reviewer"];
+
+  for (const name of orderedAgents) {
+    const agent = profile.agents?.[name];
+    if (!agent) continue;
+    const parts = [`- ${name}`];
+    if (agent.agent) parts.push(`agent=${agent.agent}`);
+    if (agent.model) parts.push(`model=${agent.model}`);
+    if (agent.thinking) parts.push(`thinking=${agent.thinking}`);
+    lines.push(parts.join("; "));
+  }
+
+  return lines;
 }
 
 export function resolveSpecsRoot(cwd: string, config: FeatureTicketFlowConfig): string {

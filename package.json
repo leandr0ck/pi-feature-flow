@@ -10,6 +10,13 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "pi-subagents": "^0.13.0",
+    "yaml": "^2.8.1"
+  },
+  "bundledDependencies": [
+    "pi-subagents"
+  ],
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*"
   },
@@ -23,6 +30,12 @@
     "vitest": "^3.2.4"
   },
   "pi": {
-    "extensions": ["./extensions/feature-ticket-flow.ts"]
+    "extensions": [
+      "./extensions/feature-ticket-flow.ts",
+      "./node_modules/pi-subagents/index.ts",
+      "./node_modules/pi-subagents/notify.ts"
+    ],
+    "skills": ["./skills"],
+    "prompts": ["./prompts"]
   }
 }

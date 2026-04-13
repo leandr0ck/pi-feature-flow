@@ -187,4 +187,48 @@ describe("feature-ticket-flow integration", () => {
     expect(retried?.runs.at(-1)?.mode).toBe("retry");
     expect(untouched?.status).toBe("pending");
   });
+
+  it("shows current profile for a feature with /feature-profile <slug>", async () => {
+    t = await createTestSession({
+      extensions: [EXTENSION_PATH],
+      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+    });
+
+    await seedFeature(t.cwd, "profile-test", [
+      { id: "STK-001", body: "# STK-001\n\n- Requires: none\n" },
+    ]);
+
+    const { specsRoot } = await featurePaths(t.cwd, "profile-test");
+    const registry = await loadRegistry(specsRoot, "profile-test");
+    registry.profileName = "frontend";
+    const fs = await import("node:fs/promises");
+    await fs.writeFile(
+      path.join(specsRoot, "profile-test", "03-ticket-registry.json"),
+      JSON.stringify(registry, null, 2) + "\n",
+      "utf8",
+    );
+
+    patchHarnessCompatibility(t);
+    await t.run(when("/feature-profile profile-test", []));
+    await settleSession(t);
+  });
+
+  it("sets profile for a feature with /feature-profile <slug> <profile>", async () => {
+    t = await createTestSession({
+      extensions: [EXTENSION_PATH],
+      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+    });
+
+    await seedFeature(t.cwd, "set-profile-test", [
+      { id: "STK-001", body: "# STK-001\n\n- Requires: none\n" },
+    ]);
+
+    patchHarnessCompatibility(t);
+    await t.run(when("/feature-profile set-profile-test default", []));
+    await settleSession(t);
+
+    const { specsRoot } = await featurePaths(t.cwd, "set-profile-test");
+    const registry = await loadRegistry(specsRoot, "set-profile-test");
+    expect(registry.profileName).toBe("default");
+  });
 });
