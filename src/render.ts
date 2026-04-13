@@ -1,4 +1,4 @@
-import type { FeatureValidationResult, TicketRecord, TicketRegistry, ValidationIssue } from "./types.js";
+import type { FeatureReviewRecord, FeatureValidationResult, TicketRecord, TicketRegistry, ValidationIssue } from "./types.js";
 
 export function renderStatus(registry: TicketRegistry): string {
   const byStatus = {
@@ -8,6 +8,8 @@ export function renderStatus(registry: TicketRegistry): string {
     pending: registry.tickets.filter((t) => t.status === "pending"),
     blocked: registry.tickets.filter((t) => t.status === "blocked"),
   };
+
+  const reviewLabel = renderReviewBadge(registry.review);
 
   const counts = [
     `done=${byStatus.done.length}`,
@@ -19,6 +21,7 @@ export function renderStatus(registry: TicketRegistry): string {
 
   return [
     `Feature: ${registry.feature}`,
+    reviewLabel ? `Review: ${reviewLabel}` : null,
     `Updated: ${registry.updatedAt}`,
     `Counts: ${counts}`,
     "",
@@ -31,7 +34,19 @@ export function renderStatus(registry: TicketRegistry): string {
     `Blocked:\n${formatTicketLines(byStatus.blocked)}`,
     "",
     `Done:\n${formatTicketLines(byStatus.done)}`,
-  ].join("\n");
+  ].filter(Boolean).join("\n");
+}
+
+export function renderReviewBadge(review?: FeatureReviewRecord): string {
+  if (!review) return "⏳ no review record";
+  switch (review.status) {
+    case "pending_review":
+      return "⏳ pending review";
+    case "approved":
+      return "✅ approved";
+    case "changes_requested":
+      return "🔁 changes requested";
+  }
 }
 
 export function renderValidation(result: FeatureValidationResult): string {
@@ -63,6 +78,30 @@ export function renderValidation(result: FeatureValidationResult): string {
   }
 
   return lines.join("\n");
+}
+
+export function renderFeatureReviewStatus(registry: TicketRegistry): string {
+  if (!registry.review) return "No review record. Feature must be reviewed before execution.";
+
+  const parts: string[] = [];
+  parts.push(`Review status: ${renderReviewBadge(registry.review)}`);
+
+  if (registry.review.requestedAt) {
+    parts.push(`Requested: ${registry.review.requestedAt}`);
+  }
+  if (registry.review.reviewedAt) {
+    parts.push(`Reviewed: ${registry.review.reviewedAt}`);
+  }
+  if (registry.review.lastAction) {
+    parts.push(`Last action: ${registry.review.lastAction}`);
+  }
+  if (registry.review.comments.length > 0) {
+    parts.push("");
+    parts.push("Feedback:");
+    registry.review.comments.forEach((c) => parts.push(`  - ${c}`));
+  }
+
+  return parts.join("\n");
 }
 
 function areDependenciesDone(ticket: TicketRecord, registry: TicketRegistry): boolean {

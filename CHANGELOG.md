@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-04-13
+
+### Added
+- **Feature review & approval gate**: feature spec execution now requires explicit user approval before tickets can be executed. No more automatic ticket execution after planning.
+- **Review state in registry**: `03-ticket-registry.json` now tracks `review.status` (`pending_review | approved | changes_requested`)
+- **New extension**: `feature-review-viewer.ts` — opens a browser-based review UI with tabs for Master Spec, Execution Plan, and Technical Design (if exists)
+- **New commands**:
+  - `/review-feature <feature>` — opens the browser-based review viewer
+  - `/approve-feature <feature>` — quick approval without opening the viewer
+  - `/request-feature-changes <feature> [comment]` — request changes and save feedback
+- **Review gate**: `/start-feature` and `/next-ticket` are blocked if the feature is not approved; they show the review status and instructions
+- **Review log**: feedback and review actions are persisted in `05-review-log.md` inside the feature folder
+- **Review status in `renderStatus()`**: the status badge is shown in ticket status output
+- **`canExecuteFeature()` guard**: centralized check for review approval status
+- **`renderFeatureReviewStatus()`**: helper to format review summary in TUI
+
+### Changed
+- `/feature <description>` no longer auto-starts the first ticket after planning. Instead, it opens the review viewer and waits for approval before enabling ticket execution.
+- `loadRegistry()` now merges the `review` field from existing registries when discovering tickets, preserving review state across discovery cycles.
+
+### Technical
+- New files: `src/feature-flow/review.ts`, `src/feature-flow/review-html.ts`, `extensions/feature-review-viewer.ts`
+- Package now ships 2 extensions (was 1)
+
 ## [0.1.7] - 2026-04-13
 
 ### Removed

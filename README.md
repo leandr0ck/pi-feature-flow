@@ -11,8 +11,11 @@ Pi package for turning a feature description into:
 
 - `/feature <description>` — create a feature from a description and start the workflow
 - `/init-feature <feature-name>` — scaffold a feature folder with spec files and a starter ticket
-- `/start-feature <feature-name>` — show status and start or resume the next ticket
-- `/next-ticket <feature-name>` — pick and execute the next available ticket automatically
+- `/review-feature <feature-name>` — open the browser-based review viewer for a feature
+- `/approve-feature <feature-name>` — approve a feature directly without opening the viewer
+- `/request-feature-changes <feature-name> [comment]` — request changes on a feature
+- `/start-feature <feature-name>` — show status and start or resume the next ticket (requires approval)
+- `/next-ticket <feature-name>` — pick and execute the next available ticket automatically (requires approval)
 - `/ticket-status <feature-name>` — show current feature ticket progress
 - `/ticket-validate <feature-name>` — validate spec files, dependencies, and ticket structure
 - `/ticket-done <feature-name>` — mark the current in-progress ticket as done
@@ -26,6 +29,14 @@ Pi package for turning a feature description into:
 pi install git:github.com/leandr0ck/pi-feature-flow
 ```
 
+## Optional subagent integration
+
+This package does not bundle or require `pi-subagents` in order to load.
+
+If your Pi environment already provides the `subagent` tool, `pi-feature-flow` will prefer subagent delegation for planner/worker/reviewer flows.
+
+If `subagent` is unavailable, the package still works and falls back to direct execution with standard Pi tools such as `read`, `write`, `edit`, and `bash`.
+
 ## What it creates
 
 ```text
@@ -34,6 +45,8 @@ pi install git:github.com/leandr0ck/pi-feature-flow
     01-master-spec.md
     02-execution-plan.md
     03-ticket-registry.json
+    04-technical-design.md  (optional — for technically complex features)
+    05-review-log.md        (generated on review actions)
     tickets/
       STK-001.md
       STK-002.md
@@ -61,7 +74,9 @@ The package will:
 3. Generate the master spec and execution plan.
 4. Generate dependency-aware ticket files.
 5. Validate the resulting structure.
-6. Start the first executable ticket when planning is approved.
+6. Open the review viewer in your browser — you must approve before tickets can be executed.
+7. Once approved, start the first ticket (or use `/start-feature` or `/next-ticket`).
+8. Continue with `/next-ticket` until all tickets are done.
 
 ## Configuration
 
@@ -183,13 +198,12 @@ To inspect the current profile and options:
 ## Suggested workflow
 
 1. Start with `/feature <description>`.
-2. Review the generated master spec and execution plan.
-3. If the feature is technically complex, add `04-technical-design.md` when the planner asks for it, then run `/start-feature <feature>` to resume planning.
-4. Confirm each generated ticket has a `- Profile:` and `- Requires:` line.
-5. Approve planning.
-6. Let the package start the first ticket.
-7. Continue with `/next-ticket <feature>` until the feature is done.
-8. Use `/ticket-done`, `/ticket-blocked`, or `/ticket-needs-fix` if you need to override the current ticket state.
+2. Review the generated master spec and execution plan in the browser viewer.
+3. Approve, request changes, or close the review. If you request changes, update the docs and run `/review-feature <feature>` again.
+4. Once approved, the first ticket becomes executable. Use the viewer prompt or run `/start-feature <feature>`.
+5. Confirm each generated ticket has a `- Profile:` and `- Requires:` line.
+6. Let the package execute tickets. Use `/next-ticket <feature>` until the feature is done.
+7. Use `/ticket-done`, `/ticket-blocked`, or `/ticket-needs-fix` if you need to override the current ticket state.
 
 ## Validation rules
 

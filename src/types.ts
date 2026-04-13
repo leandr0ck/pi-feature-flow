@@ -1,3 +1,22 @@
+// ─── Review ────────────────────────────────────────────────────────────────────
+
+export type FeatureReviewStatus = "pending_review" | "approved" | "changes_requested";
+
+export type FeatureReviewAction = "approve" | "request_changes" | "close";
+
+export type FeatureReviewRecord = {
+  status: FeatureReviewStatus;
+  requestedAt: string;
+  reviewedAt?: string;
+  comments: string[];
+  lastAction?: FeatureReviewAction;
+};
+
+export type FeatureReviewResult =
+  | { action: "approved"; comment?: string }
+  | { action: "changes_requested"; comment: string }
+  | { action: "closed" };
+
 // ─── Ticket lifecycle ─────────────────────────────────────────────────────────
 
 export type TicketStatus = "pending" | "in_progress" | "needs_fix" | "done" | "blocked";
@@ -33,6 +52,7 @@ export type TicketRegistry = {
   version: 1;
   updatedAt: string;
   profileName?: string;
+  review?: FeatureReviewRecord;
   tickets: TicketRecord[];
 };
 

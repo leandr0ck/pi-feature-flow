@@ -173,6 +173,23 @@ describe("feature-ticket-flow integration", () => {
       },
     ]);
 
+    // Pre-approve so the review gate passes
+    const { specsRoot: specsRootDemo } = await featurePaths(t.cwd, "demo");
+    const registryDemo = await loadRegistry(specsRootDemo, "demo");
+    registryDemo.review = {
+      status: "approved",
+      requestedAt: new Date().toISOString(),
+      reviewedAt: new Date().toISOString(),
+      comments: [],
+      lastAction: "approve",
+    };
+    const fs = await import("node:fs/promises");
+    await fs.writeFile(
+      path.join(specsRootDemo, "demo", "03-ticket-registry.json"),
+      JSON.stringify(registryDemo, null, 2) + "\n",
+      "utf8",
+    );
+
     patchHarnessCompatibility(t);
     await t.run(
       when("/start-feature demo", [
@@ -182,9 +199,9 @@ describe("feature-ticket-flow integration", () => {
 
     await settleSession(t);
 
-    const { specsRoot } = await featurePaths(t.cwd, "demo");
-    const registry = await loadRegistry(specsRoot, "demo");
-    const ticket = registry.tickets.find((item: { id: string }) => item.id === "STK-001");
+    const { specsRoot: finalSpecsRoot } = await featurePaths(t.cwd, "demo");
+    const finalRegistry = await loadRegistry(finalSpecsRoot, "demo");
+    const ticket = finalRegistry.tickets.find((item: { id: string }) => item.id === "STK-001");
 
     expect(ticket?.status).toBe("done");
     expect(ticket?.runs).toHaveLength(1);
@@ -219,8 +236,20 @@ describe("feature-ticket-flow integration", () => {
     const { specsRoot } = await featurePaths(t.cwd, "profile-routing");
     const registry = await loadRegistry(specsRoot, "profile-routing");
     registry.profileName = "frontend";
+    // Pre-approve so the review gate passes
+    registry.review = {
+      status: "approved",
+      requestedAt: new Date().toISOString(),
+      reviewedAt: new Date().toISOString(),
+      comments: [],
+      lastAction: "approve",
+    };
     const fs = await import("node:fs/promises");
-    await fs.writeFile(path.join(specsRoot, "profile-routing", "03-ticket-registry.json"), JSON.stringify(registry, null, 2) + "\n", "utf8");
+    await fs.writeFile(
+      path.join(specsRoot, "profile-routing", "03-ticket-registry.json"),
+      JSON.stringify(registry, null, 2) + "\n",
+      "utf8",
+    );
 
     patchHarnessCompatibility(t);
     await t.run(
@@ -264,6 +293,14 @@ describe("feature-ticket-flow integration", () => {
       mode: "start",
       outcome: "needs_fix",
     });
+    // Pre-approve so the review gate passes
+    registry.review = {
+      status: "approved",
+      requestedAt: new Date().toISOString(),
+      reviewedAt: new Date().toISOString(),
+      comments: [],
+      lastAction: "approve",
+    };
 
     const fs = await import("node:fs/promises");
     await fs.writeFile(path.join(specsRoot, "priority", "03-ticket-registry.json"), JSON.stringify(registry, null, 2) + "\n", "utf8");
