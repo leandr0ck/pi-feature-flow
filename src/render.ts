@@ -1,13 +1,12 @@
 import type { FeatureValidationResult, TicketRecord, TicketRegistry, ValidationIssue } from "./types.js";
-import { areDependenciesDone, getTicket } from "./registry.js";
 
-export function renderStatus(registry: TicketRegistry) {
+export function renderStatus(registry: TicketRegistry): string {
   const byStatus = {
-    done: registry.tickets.filter((ticket) => ticket.status === "done"),
-    inProgress: registry.tickets.filter((ticket) => ticket.status === "in_progress"),
-    needsFix: registry.tickets.filter((ticket) => ticket.status === "needs_fix"),
-    pending: registry.tickets.filter((ticket) => ticket.status === "pending"),
-    blocked: registry.tickets.filter((ticket) => ticket.status === "blocked"),
+    done: registry.tickets.filter((t) => t.status === "done"),
+    inProgress: registry.tickets.filter((t) => t.status === "in_progress"),
+    needsFix: registry.tickets.filter((t) => t.status === "needs_fix"),
+    pending: registry.tickets.filter((t) => t.status === "pending"),
+    blocked: registry.tickets.filter((t) => t.status === "blocked"),
   };
 
   const counts = [
@@ -35,7 +34,7 @@ export function renderStatus(registry: TicketRegistry) {
   ].join("\n");
 }
 
-export function renderValidation(result: FeatureValidationResult) {
+export function renderValidation(result: FeatureValidationResult): string {
   if (result.issues.length === 0) {
     return [`Feature: ${result.feature}`, `Path: ${result.featurePath}`, "Validation: OK"].join("\n");
   }
@@ -45,7 +44,7 @@ export function renderValidation(result: FeatureValidationResult) {
     warning: result.issues.filter((issue: ValidationIssue) => issue.severity === "warning"),
   };
 
-  const lines = [
+  const lines: string[] = [
     `Feature: ${result.feature}`,
     `Path: ${result.featurePath}`,
     `Validation: ${result.valid ? "warnings only" : "failed"}`,
@@ -66,20 +65,44 @@ export function renderValidation(result: FeatureValidationResult) {
   return lines.join("\n");
 }
 
-function formatTicketLines(tickets: TicketRecord[], registry?: TicketRegistry) {
+function areDependenciesDone(ticket: TicketRecord, registry: TicketRegistry): boolean {
+  return ticket.dependencies.every((dep) => {
+    const found = registry.tickets.find((t) => t.id.toLowerCase() === dep.toLowerCase());
+    return found?.status === "done";
+  });
+}
+
+function formatTicketLines(tickets: TicketRecord[], registry?: TicketRegistry): string {
   if (tickets.length === 0) return "- none";
   return tickets
     .map((ticket) => {
-      const blockedBy =
-        registry && (ticket.status === "pending" || ticket.status === "needs_fix") && !areDependenciesDone(ticket, registry)
-          ? ` (waiting for ${ticket.dependencies.filter((dependency: string) => getTicket(registry, dependency)?.status !== "done").join(", ")})`
-          : "";
-      const reason = ticket.blockedReason ? ` — ${ticket.blockedReason}` : "";
+      let extra = "";
+
+      // Show why a ticket is blocked
+      if (registry && (ticket.status === "pending" || ticket.status === "needs_fix")) {
+        if (!areDependenciesDone(ticket, registry)) {
+          const missing = ticket.dependencies
+            .filter((d) => {
+              const found = registry.tickets.find((t) => t.id.toLowerCase() === d.toLowerCase());
+              return found?.status !== "done";
+            })
+            .join(", ");
+          extra += ` (waiting for ${missing})`;
+        }
+      }
+
+      // Show blocked reason
+      if (ticket.blockedReason) {
+        extra += ` — ${ticket.blockedReason}`;
+      }
+
+      // Show last run summary
       const lastRun = ticket.runs.at(-1);
-      const runSummary = lastRun
-        ? ` [last run: ${lastRun.mode}${lastRun.outcome ? ` -> ${lastRun.outcome}` : ""}]`
-        : "";
-      return `- ${ticket.id}: ${ticket.title}${blockedBy}${reason}${runSummary}`;
+      if (lastRun) {
+        extra += ` [${lastRun.mode}${lastRun.outcome ? ` -> ${lastRun.outcome}` : ""}]`;
+      }
+
+      return `- ${ticket.id}: ${ticket.title}${extra}`;
     })
     .join("\n");
 }

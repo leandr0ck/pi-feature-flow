@@ -1,26 +1,31 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { featureRoot, ticketsDirPath } from "./registry.js";
-import { discoverTickets } from "./tickets.js";
-import type { FeatureTicketFlowConfig, FeatureValidationResult, TicketRecord, ValidationIssue } from "./types.js";
+import type { FeatureValidationResult, TicketRecord, ValidationIssue } from "./types.js";
+import { getTicket } from "./registry.js";
 
-export async function validateFeature(specsRoot: string, feature: string, config: FeatureTicketFlowConfig): Promise<FeatureValidationResult> {
-  const root = featureRoot(specsRoot, feature);
+// Convention-based constants (not configurable)
+const REQUIRED_SPEC_FILES = ["01-master-spec.md", "02-execution-plan.md"] as const;
+const TICKETS_DIR_NAME = "tickets";
+
+export async function validateFeature(specsRoot: string, feature: string): Promise<FeatureValidationResult> {
+  const featureDir = path.join(specsRoot, feature);
+  const ticketsDir = path.join(featureDir, TICKETS_DIR_NAME);
   const issues: ValidationIssue[] = [];
 
-  for (const requiredFile of config.requiredSpecFiles) {
-    const filePath = path.join(root, requiredFile);
+  // Check required spec files
+  for (const fileName of REQUIRED_SPEC_FILES) {
+    const filePath = path.join(featureDir, fileName);
     if (!(await pathExists(filePath))) {
       issues.push({
         severity: "error",
         code: "missing-spec-file",
-        message: `Missing required spec file: ${requiredFile}`,
+        message: `Missing required spec file: ${fileName}`,
         filePath,
       });
     }
   }
 
-  const ticketsDir = ticketsDirPath(specsRoot, feature, config);
+  // Check tickets directory
   if (!(await pathExists(ticketsDir))) {
     issues.push({
       severity: "error",
@@ -28,93 +33,117 @@ export async function validateFeature(specsRoot: string, feature: string, config
       message: `Missing tickets directory: ${ticketsDir}`,
       filePath: ticketsDir,
     });
-    return buildResult(feature, root, issues);
+    return buildResult(feature, featureDir, issues);
   }
 
-  let tickets: TicketRecord[] = [];
-  try {
-    tickets = await discoverTickets(ticketsDir, config);
-  } catch {
-    tickets = [];
-  }
-
-  if (tickets.length === 0) {
+  // Discover ticket files
+  const ticketFiles = (await fs.readdir(ticketsDir)).filter((f) => f.endsWith(".md")).sort();
+  if (ticketFiles.length === 0) {
     issues.push({
       severity: "error",
       code: "no-tickets",
       message: `No markdown tickets found in ${ticketsDir}`,
       filePath: ticketsDir,
     });
-    return buildResult(feature, root, issues);
+    return buildResult(feature, featureDir, issues);
   }
 
-  const byId = new Map<string, TicketRecord>();
-  const incoming = new Map<string, number>();
+  // Parse tickets inline (avoid circular import)
+  const tickets: TicketRecord[] = await Promise.all(
+    ticketFiles.map(async (file) => {
+      const absolutePath = path.join(ticketsDir, file);
+      const content = await fs.readFile(absolutePath, "utf8");
+      const id = file.replace(/\.md$/, "");
+      return {
+        id,
+        title: parseTitle(content, id),
+        path: absolutePath,
+        dependencies: parseDependencies(content),
+        status: "pending" as const,
+        updatedAt: new Date().toISOString(),
+        runs: [],
+      } satisfies TicketRecord;
+    }),
+  );
 
+  // Check for duplicate ids (case-insensitive)
+  const seenIds = new Set<string>();
   for (const ticket of tickets) {
-    incoming.set(ticket.id, 0);
     const normalized = ticket.id.toLowerCase();
-    if ([...byId.keys()].some((id) => id.toLowerCase() === normalized)) {
+    if (seenIds.has(normalized)) {
       issues.push({
         severity: "error",
         code: "duplicate-ticket-id",
-        message: `Duplicate ticket id detected: ${ticket.id}`,
+        message: `Duplicate ticket id: ${ticket.id}`,
         ticketId: ticket.id,
         filePath: ticket.path,
       });
     }
-    byId.set(ticket.id, ticket);
+    seenIds.add(normalized);
 
+    // Warn about non-standard id format
     if (!/^(?:[A-Z]+-\d+|T\d+)$/i.test(ticket.id)) {
       issues.push({
         severity: "warning",
         code: "invalid-ticket-id",
-        message: `Ticket id ${ticket.id} does not match the recommended pattern (STK-001 or T1).`,
+        message: `Ticket id ${ticket.id} does not match recommended pattern (STK-001 or T1).`,
         ticketId: ticket.id,
         filePath: ticket.path,
       });
     }
 
-    const seenDependencies = new Set<string>();
-    for (const dependency of ticket.dependencies) {
-      const key = dependency.toLowerCase();
-      if (seenDependencies.has(key)) {
+    // Check for duplicate dependencies within a ticket
+    const seenDeps = new Set<string>();
+    for (const dep of ticket.dependencies) {
+      const key = dep.toLowerCase();
+      if (seenDeps.has(key)) {
         issues.push({
           severity: "warning",
           code: "duplicate-dependency",
-          message: `Ticket ${ticket.id} repeats dependency ${dependency}.`,
+          message: `Ticket ${ticket.id} repeats dependency ${dep}.`,
           ticketId: ticket.id,
           filePath: ticket.path,
         });
       }
-      seenDependencies.add(key);
+      seenDeps.add(key);
     }
   }
 
+  // Check for missing dependencies
+  const allIds = new Set(tickets.map((t) => t.id.toLowerCase()));
   for (const ticket of tickets) {
-    for (const dependency of ticket.dependencies) {
-      const target = findTicketInsensitive(tickets, dependency);
-      if (!target) {
+    for (const dep of ticket.dependencies) {
+      if (!allIds.has(dep.toLowerCase())) {
         issues.push({
           severity: "error",
           code: "missing-dependency",
-          message: `Ticket ${ticket.id} depends on missing ticket ${dependency}.`,
+          message: `Ticket ${ticket.id} depends on missing ticket ${dep}.`,
           ticketId: ticket.id,
           filePath: ticket.path,
         });
-        continue;
       }
-      incoming.set(target.id, (incoming.get(target.id) || 0) + 1);
     }
   }
 
+  // Check for cycles
   const cycleIssues = detectCycles(tickets);
   issues.push(...cycleIssues);
 
+  // Check for orphan tickets (when there are multiple tickets)
   if (tickets.length > 1) {
+    const incoming = new Map<string, number>();
+    for (const ticket of tickets) {
+      incoming.set(ticket.id.toLowerCase(), 0);
+    }
+    for (const ticket of tickets) {
+      for (const dep of ticket.dependencies) {
+        const key = dep.toLowerCase();
+        incoming.set(key, (incoming.get(key) || 0) + 1);
+      }
+    }
     for (const ticket of tickets) {
       const hasOutgoing = ticket.dependencies.length > 0;
-      const hasIncoming = (incoming.get(ticket.id) || 0) > 0;
+      const hasIncoming = (incoming.get(ticket.id.toLowerCase()) || 0) > 0;
       if (!hasOutgoing && !hasIncoming) {
         issues.push({
           severity: "warning",
@@ -127,16 +156,41 @@ export async function validateFeature(specsRoot: string, feature: string, config
     }
   }
 
-  return buildResult(feature, root, dedupeIssues(issues));
+  return buildResult(feature, featureDir, dedupeIssues(issues));
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function parseTitle(content: string, fallbackId: string): string {
+  const heading = content.match(/^#\s+[^—-]+[—-]\s+(.+)$/m);
+  if (heading?.[1]) return heading[1].trim();
+  const firstHeading = content.match(/^#\s+(.+)$/m);
+  return firstHeading?.[1]?.trim() || fallbackId;
+}
+
+// Convention: `- Requires: TKT-001, TKT-002` or `- Requires: none`
+function parseDependencies(content: string): string[] {
+  const REQUIRES_LABEL = "Requires";
+  const DEPENDENCY_SPLIT_PATTERN = ",";
+
+  const match = content.match(new RegExp(`^-\\s*${REQUIRES_LABEL}:\\s*(.+)$`, "m"));
+  const raw = match?.[1] || "";
+  const value = raw.trim();
+  if (!value || value.toLowerCase() === "none" || value === "-") return [];
+
+  const splitter = DEPENDENCY_SPLIT_PATTERN === "," ? /,/ : new RegExp(DEPENDENCY_SPLIT_PATTERN);
+  return value.split(splitter).map((part) => part.trim()).filter(Boolean);
 }
 
 function detectCycles(tickets: TicketRecord[]): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const visited = new Set<string>();
   const stack = new Set<string>();
+  const ticketById = new Map(tickets.map((t) => [t.id.toLowerCase(), t]));
 
   const visit = (ticket: TicketRecord, trail: string[]) => {
-    if (stack.has(ticket.id)) {
+    const key = ticket.id.toLowerCase();
+    if (stack.has(key)) {
       const cycleStart = trail.indexOf(ticket.id);
       const cycle = [...trail.slice(cycleStart), ticket.id];
       issues.push({
@@ -148,27 +202,32 @@ function detectCycles(tickets: TicketRecord[]): ValidationIssue[] {
       });
       return;
     }
+    if (visited.has(key)) return;
+    visited.add(key);
+    stack.add(key);
 
-    if (visited.has(ticket.id)) return;
-    visited.add(ticket.id);
-    stack.add(ticket.id);
-
-    for (const dependency of ticket.dependencies) {
-      const dependencyTicket = findTicketInsensitive(tickets, dependency);
-      if (dependencyTicket) visit(dependencyTicket, [...trail, ticket.id]);
+    for (const dep of ticket.dependencies) {
+      const depTicket = ticketById.get(dep.toLowerCase());
+      if (depTicket) visit(depTicket, [...trail, ticket.id]);
     }
 
-    stack.delete(ticket.id);
+    stack.delete(key);
   };
 
   for (const ticket of tickets) visit(ticket, []);
   return issues;
 }
 
-function dedupeIssues(issues: ValidationIssue[]) {
+function dedupeIssues(issues: ValidationIssue[]): ValidationIssue[] {
   const seen = new Set<string>();
   return issues.filter((issue) => {
-    const key = [issue.severity, issue.code, issue.ticketId || "", issue.filePath || "", issue.message].join("::");
+    const key = [
+      issue.severity,
+      issue.code,
+      issue.ticketId || "",
+      issue.filePath || "",
+      issue.message,
+    ].join("::");
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -184,11 +243,7 @@ function buildResult(feature: string, featurePath: string, issues: ValidationIss
   };
 }
 
-function findTicketInsensitive(tickets: TicketRecord[], ticketId: string) {
-  return tickets.find((ticket) => ticket.id.toLowerCase() === ticketId.toLowerCase());
-}
-
-async function pathExists(targetPath: string) {
+async function pathExists(targetPath: string): Promise<boolean> {
   try {
     await fs.access(targetPath);
     return true;

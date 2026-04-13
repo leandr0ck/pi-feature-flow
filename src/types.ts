@@ -1,3 +1,5 @@
+// ─── Ticket lifecycle ─────────────────────────────────────────────────────────
+
 export type TicketStatus = "pending" | "in_progress" | "needs_fix" | "done" | "blocked";
 
 export type TicketRunMode = "start" | "resume" | "retry";
@@ -27,50 +29,26 @@ export type TicketRecord = {
 
 export type TicketRegistry = {
   feature: string;
-  version: 2;
+  version: 1;
   updatedAt: string;
   tickets: TicketRecord[];
 };
 
-export type DependencyParser = (content: string) => string[];
+// ─── Execution ───────────────────────────────────────────────────────────────
 
 export type ExecutionChainStep = {
   agent: string;
   task: string;
 };
 
+// ─── Config ───────────────────────────────────────────────────────────────────
+
 export type FeatureTicketFlowConfig = {
+  /** Root directory containing feature folders. Default: "./docs/technical-specs" */
   specsRoot: string;
-  ticketsDirName: string;
-  registryFile: string;
-  featureSelectorTitle: string;
-  requiredSpecFiles: string[];
-  executionMode: "chain-message" | "command-message" | "custom-message" | "subagent-chain";
-  executionTarget: string;
-  executionPromptTemplate?: string;
-  executionPromptTemplates?: Partial<Record<"start" | "resume" | "retry" | "blocked", string>>;
-  executionChain?: ExecutionChainStep[];
-  executionStatusRequest: string;
-  statusParsing: {
-    enabled: boolean;
-    approved: string[];
-    blocked: string[];
-    needsFix: string[];
-    maxMessagesToInspect: number;
-  };
-  dependencyParsing: {
-    mode: "requires-line" | "frontmatter" | "custom";
-    requiresLabel: string;
-    frontmatterField: string;
-    customPattern?: string;
-    splitPattern?: string;
-  };
-  scaffold: {
-    createStarterTicket: boolean;
-    starterTicketId: string;
-    starterTicketTitle: string;
-  };
 };
+
+// ─── Validation ───────────────────────────────────────────────────────────────
 
 export type ValidationSeverity = "error" | "warning";
 

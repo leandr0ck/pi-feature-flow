@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createTestSession, when, says, type TestSession } from "@marcfargas/pi-test-harness";
@@ -25,7 +25,7 @@ async function featurePaths(cwd: string, feature: string) {
   const config = await loadConfig(cwd);
   const specsRoot = resolveSpecsRoot(cwd, config);
   const featureRoot = path.join(specsRoot, feature);
-  const ticketsRoot = path.join(featureRoot, config.ticketsDirName);
+  const ticketsRoot = path.join(featureRoot, "tickets");
   return { config, specsRoot, featureRoot, ticketsRoot };
 }
 
@@ -71,14 +71,14 @@ describe("feature-ticket-flow integration", () => {
     patchHarnessCompatibility(t);
     await t.run(when("/init-feature demo-feature", []));
 
-    const { featureRoot, ticketsRoot, config } = await featurePaths(t.cwd, "demo-feature");
+    const { featureRoot, ticketsRoot } = await featurePaths(t.cwd, "demo-feature");
     const masterSpec = await readFile(path.join(featureRoot, "01-master-spec.md"), "utf8");
     const executionPlan = await readFile(path.join(featureRoot, "02-execution-plan.md"), "utf8");
-    const starterTicket = await readFile(path.join(ticketsRoot, `${config.scaffold.starterTicketId}.md`), "utf8");
+    const starterTicket = await readFile(path.join(ticketsRoot, "STK-001.md"), "utf8");
 
     expect(masterSpec).toContain("demo-feature");
     expect(executionPlan).toContain("execution plan");
-    expect(starterTicket).toContain(config.scaffold.starterTicketId);
+    expect(starterTicket).toContain("STK-001");
   });
 
   it("blocks /start-feature when validation fails", async () => {
@@ -127,61 +127,14 @@ describe("feature-ticket-flow integration", () => {
 
     await settleSession(t);
 
-    const { config, specsRoot } = await featurePaths(t.cwd, "demo");
-    const registry = await loadRegistry(specsRoot, "demo", config);
+    const { specsRoot } = await featurePaths(t.cwd, "demo");
+    const registry = await loadRegistry(specsRoot, "demo");
     const ticket = registry.tickets.find((item: { id: string }) => item.id === "STK-001");
 
     expect(ticket?.status).toBe("done");
     expect(ticket?.runs).toHaveLength(1);
     expect(ticket?.runs[0]?.mode).toBe("start");
     expect(ticket?.runs[0]?.outcome).toBe("done");
-  });
-
-  it("builds a subagent-chain execution message when configured", async () => {
-    t = await createTestSession({
-      extensions: [EXTENSION_PATH],
-      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
-      mockUI: { select: 0 },
-    });
-
-    await writeFile(
-      path.join(t.cwd, "feature-ticket-flow.config.json"),
-      JSON.stringify(
-        {
-          executionMode: "subagent-chain",
-          executionChain: [
-            { agent: "planner", task: "Plan {feature}/{ticket}" },
-            { agent: "implementer", task: "Build {feature}/{ticket}" },
-          ],
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    );
-
-    await seedFeature(t.cwd, "chain-demo", [
-      {
-        id: "STK-001",
-        body: "# STK-001 — Chain ticket\n\n- Requires: none\n",
-      },
-    ]);
-
-    patchHarnessCompatibility(t);
-    await t.run(
-      when("/start-feature chain-demo", [
-        says("APPROVED\nChain complete."),
-      ]),
-    );
-
-    await settleSession(t);
-    const userMessages = t.events.messages.filter((message) => message.role === "user").map(messageText);
-    const generated = userMessages.find((text) => text.includes("Use the subagent tool now with this exact chain configuration:"));
-
-    expect(generated).toBeTruthy();
-    expect(generated).toContain('"agent": "planner"');
-    expect(generated).toContain("Plan chain-demo/STK-001");
-    expect(generated).toContain('"agent": "implementer"');
   });
 
   it("prioritizes needs-fix tickets before pending ones on /next-ticket", async () => {
@@ -202,13 +155,20 @@ describe("feature-ticket-flow integration", () => {
       },
     ]);
 
-    const { config, specsRoot } = await featurePaths(t.cwd, "priority");
-    const registry = await loadRegistry(specsRoot, "priority", config);
+    const { specsRoot } = await featurePaths(t.cwd, "priority");
+    const registry = await loadRegistry(specsRoot, "priority");
     const ticket = registry.tickets.find((item: { id: string }) => item.id === "STK-001");
     if (!ticket) throw new Error("missing STK-001");
     ticket.status = "needs_fix";
-    ticket.runs.push({ startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), mode: "start", outcome: "needs_fix" });
-    await writeFile(path.join(specsRoot, "priority", config.registryFile), JSON.stringify(registry, null, 2) + "\n", "utf8");
+    ticket.runs.push({
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      mode: "start",
+      outcome: "needs_fix",
+    });
+
+    const fs = await import("node:fs/promises");
+    await fs.writeFile(path.join(specsRoot, "priority", "03-ticket-registry.json"), JSON.stringify(registry, null, 2) + "\n", "utf8");
 
     patchHarnessCompatibility(t);
     await t.run(
@@ -219,7 +179,7 @@ describe("feature-ticket-flow integration", () => {
 
     await settleSession(t);
 
-    const refreshed = await loadRegistry(specsRoot, "priority", config);
+    const refreshed = await loadRegistry(specsRoot, "priority");
     const retried = refreshed.tickets.find((item: { id: string }) => item.id === "STK-001");
     const untouched = refreshed.tickets.find((item: { id: string }) => item.id === "STK-002");
 

@@ -13,51 +13,54 @@ import {
   startTicketRun,
 } from "../src/registry.js";
 import { renderStatus, renderValidation } from "../src/render.js";
-import type { ExecutionChainStep, FeatureTicketFlowConfig, TicketRecord, TicketRunMode, TicketStatus } from "../src/types.js";
+import type { FeatureValidationResult, TicketStatus } from "../src/types.js";
 import { validateFeature } from "../src/validation.js";
 
-type PendingExecution = {
+// ─── State ─────────────────────────────────────────────────────────────────────
+
+let pendingExecution: {
   feature: string;
   ticketId: string;
   phase: "start" | "resume" | "retry";
   cwd: string;
   specsRoot: string;
-  config: FeatureTicketFlowConfig;
-};
+} | undefined;
 
-type ParsedOutcome = {
-  status: Extract<TicketStatus, "done" | "blocked" | "needs_fix">;
-  note?: string;
-};
+// ─── Extension entrypoint ──────────────────────────────────────────────────────
 
 export default function featureTicketFlow(pi: ExtensionAPI) {
-  let pendingExecution: PendingExecution | undefined;
+
+  // ── Auto-parse outcome from agent output ──────────────────────────────────
 
   pi.on("agent_end", async (event, ctx) => {
     const pending = pendingExecution;
-    if (!pending || !pending.config.statusParsing.enabled) return;
+    if (!pending) return;
     pendingExecution = undefined;
 
-    const parsed = parseOutcome(event.messages, pending.config);
+    const parsed = parseOutcome(event.messages);
     if (!parsed) return;
 
     try {
-      const registry = await loadRegistry(pending.specsRoot, pending.feature, pending.config);
-      if (!getTicket(registry, pending.ticketId)) return;
+      const registry = await loadRegistry(pending.specsRoot, pending.feature);
+      const ticket = getTicket(registry, pending.ticketId);
+      if (!ticket) return;
 
       resolveTicketStatus(registry, pending.ticketId, parsed.status, parsed.note);
-      await saveRegistry(pending.specsRoot, pending.feature, pending.config, registry);
+      await saveRegistry(pending.specsRoot, pending.feature, registry);
 
       const label = parsed.status === "done" ? "APPROVED" : parsed.status === "blocked" ? "BLOCKED" : "NEEDS-FIX";
-      emitInfo(pi, `Auto-updated ${pending.ticketId} for ${pending.feature} from agent result: ${label}${parsed.note ? `\n${parsed.note}` : ""}`);
+      emitInfo(pi, `Auto-updated ${pending.ticketId} for ${pending.feature}: ${label}${parsed.note ? `\n${parsed.note}` : ""}`);
       ctx.ui.notify(`Ticket ${pending.ticketId}: ${label}`, parsed.status === "blocked" ? "warning" : "info");
-    } catch (error: any) {
-      ctx.ui.notify(`Could not auto-update ticket status: ${error?.message || String(error)}`, "error");
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(`Could not auto-update ticket: ${message}`, "error");
     }
   });
 
+  // ── Commands ───────────────────────────────────────────────────────────────
+
   pi.registerCommand("init-feature", {
-    description: "Scaffold a feature folder with required spec files, tickets directory, and starter ticket",
+    description: "Scaffold a feature folder with spec files and starter ticket",
     handler: async (args, ctx) => {
       const slug = args.trim();
       if (!slug) {
@@ -65,158 +68,164 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         return;
       }
 
-      const resolved = await getResolvedConfig(ctx.cwd);
-      const created = await scaffoldFeature(resolved.specsRoot, slug, resolved.config);
-      emitInfo(pi, `Initialized feature ${slug}.\n${created.map((entry) => `- ${entry}`).join("\n")}`);
+      const config = await loadConfig(ctx.cwd);
+      const specsRoot = resolveSpecsRoot(ctx.cwd, config);
+      const created = await scaffoldFeature(specsRoot, slug);
+      emitInfo(pi, `Initialized ${slug}.\n${created.map((p) => `- ${p}`).join("\n")}`);
 
-      const validation = await validateFeature(resolved.specsRoot, slug, resolved.config);
+      const validation = await validateFeature(specsRoot, slug);
       emitInfo(pi, renderValidation(validation));
     },
   });
 
   pi.registerCommand("start-feature", {
-    description: "Initialize feature execution flow, show status, and start the next available ticket",
+    description: "Show feature status and start or resume the next ticket",
     getArgumentCompletions: createFeatureCompletions,
     handler: async (args, ctx) => {
       if (!ctx.isIdle()) {
-        ctx.ui.notify("The agent is busy. Wait until it finishes before starting a feature.", "warning");
+        ctx.ui.notify("Agent is busy. Wait until it finishes.", "warning");
         return;
       }
 
-      const resolved = await getResolvedConfig(ctx.cwd);
-      const feature = await resolveFeatureSlug(args, resolved.specsRoot, resolved.config.featureSelectorTitle, ctx);
+      const config = await loadConfig(ctx.cwd);
+      const specsRoot = resolveSpecsRoot(ctx.cwd, config);
+      const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
       if (!feature) return;
-      if (!(await validateBeforeExecution(pi, feature, resolved.specsRoot, resolved.config, ctx))) return;
+      if (!(await validateBeforeExecution(pi, feature, specsRoot, ctx))) return;
 
-      const registry = await loadRegistry(resolved.specsRoot, feature, resolved.config);
+      const registry = await loadRegistry(specsRoot, feature);
       emitInfo(pi, renderStatus(registry));
 
-      const choice = await ctx.ui.select(`Feature ${feature}`, ["Start or resume next ticket", "Show status only", "Cancel"]);
+      const choice = await ctx.ui.select(`Feature ${feature}`, [
+        "Start or resume next ticket",
+        "Show status only",
+        "Cancel",
+      ]);
       if (!choice || choice === "Cancel" || choice === "Show status only") return;
 
-      await runNextTicketFlow(pi, feature, ctx, (pendingExecutionRef) => {
-        pendingExecution = pendingExecutionRef;
-      });
+      await runNextTicketFlow(pi, feature, ctx);
     },
   });
 
   pi.registerCommand("next-ticket", {
-    description: "Pick the next planned feature ticket automatically and execute the configured runner",
+    description: "Pick and execute the next available ticket automatically",
     getArgumentCompletions: createFeatureCompletions,
     handler: async (args, ctx) => {
       if (!ctx.isIdle()) {
-        ctx.ui.notify("The agent is busy. Wait until it finishes before asking for the next ticket.", "warning");
+        ctx.ui.notify("Agent is busy. Wait until it finishes.", "warning");
         return;
       }
 
-      const resolved = await getResolvedConfig(ctx.cwd);
-      const feature = await resolveFeatureSlug(args, resolved.specsRoot, resolved.config.featureSelectorTitle, ctx);
+      const config = await loadConfig(ctx.cwd);
+      const specsRoot = resolveSpecsRoot(ctx.cwd, config);
+      const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
       if (!feature) return;
 
-      await runNextTicketFlow(pi, feature, ctx, (pendingExecutionRef) => {
-        pendingExecution = pendingExecutionRef;
-      });
+      await runNextTicketFlow(pi, feature, ctx);
     },
   });
 
   pi.registerCommand("ticket-done", {
-    description: "Mark the current in-progress ticket as done without typing the ticket id",
+    description: "Mark the current in-progress ticket as done",
     getArgumentCompletions: createFeatureCompletions,
     handler: async (args, ctx) => {
-      const resolved = await getResolvedConfig(ctx.cwd);
-      const feature = await resolveFeatureSlug(args, resolved.specsRoot, resolved.config.featureSelectorTitle, ctx);
+      const config = await loadConfig(ctx.cwd);
+      const specsRoot = resolveSpecsRoot(ctx.cwd, config);
+      const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
       if (!feature) return;
 
-      const registry = await loadRegistry(resolved.specsRoot, feature, resolved.config);
-      const current = registry.tickets.find((ticket) => ticket.status === "in_progress");
+      const registry = await loadRegistry(specsRoot, feature);
+      const current = registry.tickets.find((t) => t.status === "in_progress");
       if (!current) {
-        emitInfo(pi, `No ticket is currently in progress for ${feature}.`);
+        emitInfo(pi, `No ticket in progress for ${feature}.`);
         return;
       }
 
       resolveTicketStatus(registry, current.id, "done");
-      await saveRegistry(resolved.specsRoot, feature, resolved.config, registry);
-      emitInfo(pi, `Marked ${current.id} as done for ${feature}.`);
+      await saveRegistry(specsRoot, feature, registry);
+      emitInfo(pi, `Marked ${current.id} as done.`);
 
-      const nextChoice = await ctx.ui.select(`Ticket ${current.id} marked done`, ["Start next ticket", "Show feature status", "Stop here"]);
+      const nextChoice = await ctx.ui.select(`Ticket ${current.id} done`, [
+        "Start next ticket",
+        "Show feature status",
+        "Stop here",
+      ]);
       if (nextChoice === "Start next ticket") {
-        await runNextTicketFlow(pi, feature, ctx, (pendingExecutionRef) => {
-          pendingExecution = pendingExecutionRef;
-        });
-        return;
-      }
-      if (nextChoice === "Show feature status") {
-        const refreshed = await loadRegistry(resolved.specsRoot, feature, resolved.config);
+        await runNextTicketFlow(pi, feature, ctx);
+      } else if (nextChoice === "Show feature status") {
+        const refreshed = await loadRegistry(specsRoot, feature);
         emitInfo(pi, renderStatus(refreshed));
       }
     },
   });
 
   pi.registerCommand("ticket-blocked", {
-    description: "Mark the current in-progress ticket as blocked without typing the ticket id",
+    description: "Mark the current in-progress ticket as blocked",
     getArgumentCompletions: createFeatureCompletions,
     handler: async (args, ctx) => {
-      const resolved = await getResolvedConfig(ctx.cwd);
-      const feature = await resolveFeatureSlug(args, resolved.specsRoot, resolved.config.featureSelectorTitle, ctx);
+      const config = await loadConfig(ctx.cwd);
+      const specsRoot = resolveSpecsRoot(ctx.cwd, config);
+      const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
       if (!feature) return;
 
-      const registry = await loadRegistry(resolved.specsRoot, feature, resolved.config);
-      const current = registry.tickets.find((ticket) => ticket.status === "in_progress");
+      const registry = await loadRegistry(specsRoot, feature);
+      const current = registry.tickets.find((t) => t.status === "in_progress");
       if (!current) {
-        emitInfo(pi, `No ticket is currently in progress for ${feature}.`);
+        emitInfo(pi, `No ticket in progress for ${feature}.`);
         return;
       }
 
       const reason = await ctx.ui.input(`Why is ${current.id} blocked?`, "dependency, bug, missing info...");
       resolveTicketStatus(registry, current.id, "blocked", reason || "Blocked by user");
-      await saveRegistry(resolved.specsRoot, feature, resolved.config, registry);
-      emitInfo(pi, `Marked ${current.id} as blocked for ${feature}.`);
+      await saveRegistry(specsRoot, feature, registry);
+      emitInfo(pi, `Marked ${current.id} as blocked.`);
 
-      const nextChoice = await ctx.ui.select(`Ticket ${current.id} marked blocked`, ["Try next available ticket", "Show feature status", "Stop here"]);
+      const nextChoice = await ctx.ui.select(`Ticket ${current.id} blocked`, [
+        "Try next available ticket",
+        "Show feature status",
+        "Stop here",
+      ]);
       if (nextChoice === "Try next available ticket") {
-        await runNextTicketFlow(pi, feature, ctx, (pendingExecutionRef) => {
-          pendingExecution = pendingExecutionRef;
-        });
-        return;
-      }
-      if (nextChoice === "Show feature status") {
-        const refreshed = await loadRegistry(resolved.specsRoot, feature, resolved.config);
+        await runNextTicketFlow(pi, feature, ctx);
+      } else if (nextChoice === "Show feature status") {
+        const refreshed = await loadRegistry(specsRoot, feature);
         emitInfo(pi, renderStatus(refreshed));
       }
     },
   });
 
   pi.registerCommand("ticket-needs-fix", {
-    description: "Mark the current in-progress ticket as needs-fix and optionally retry it",
+    description: "Mark the current in-progress ticket as needs-fix and optionally retry",
     getArgumentCompletions: createFeatureCompletions,
     handler: async (args, ctx) => {
-      const resolved = await getResolvedConfig(ctx.cwd);
-      const feature = await resolveFeatureSlug(args, resolved.specsRoot, resolved.config.featureSelectorTitle, ctx);
+      const config = await loadConfig(ctx.cwd);
+      const specsRoot = resolveSpecsRoot(ctx.cwd, config);
+      const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
       if (!feature) return;
 
-      const registry = await loadRegistry(resolved.specsRoot, feature, resolved.config);
-      const current = registry.tickets.find((ticket) => ticket.status === "in_progress");
+      const registry = await loadRegistry(specsRoot, feature);
+      const current = registry.tickets.find((t) => t.status === "in_progress");
       if (!current) {
-        emitInfo(pi, `No ticket is currently in progress for ${feature}.`);
+        emitInfo(pi, `No ticket in progress for ${feature}.`);
         return;
       }
 
-      const note = await ctx.ui.input(`What still needs fixing in ${current.id}?`, "tests failing, edge cases, follow-up...");
+      const note = await ctx.ui.input(`What still needs fixing in ${current.id}?`, "tests failing, edge cases...");
       resolveTicketStatus(registry, current.id, "needs_fix", note || "Needs more work");
-      await saveRegistry(resolved.specsRoot, feature, resolved.config, registry);
-      emitInfo(pi, `Marked ${current.id} as needs-fix for ${feature}.`);
+      await saveRegistry(specsRoot, feature, registry);
+      emitInfo(pi, `Marked ${current.id} as needs-fix.`);
 
-      const nextChoice = await ctx.ui.select(`Ticket ${current.id} marked needs-fix`, ["Retry now", "Show feature status", "Stop here"]);
+      const nextChoice = await ctx.ui.select(`Ticket ${current.id} needs-fix`, [
+        "Retry now",
+        "Show feature status",
+        "Stop here",
+      ]);
       if (nextChoice === "Retry now") {
         startTicketRun(registry, current.id, "retry");
-        await saveRegistry(resolved.specsRoot, feature, resolved.config, registry);
-        await launchTicketExecution(pi, feature, current.id, resolved.config, ctx.cwd, resolved.specsRoot, "retry", (pendingExecutionRef) => {
-          pendingExecution = pendingExecutionRef;
-        });
-        return;
-      }
-      if (nextChoice === "Show feature status") {
-        const refreshed = await loadRegistry(resolved.specsRoot, feature, resolved.config);
+        await saveRegistry(specsRoot, feature, registry);
+        await launchTicketExecution(pi, feature, current.id, ctx.cwd, specsRoot, "retry");
+      } else if (nextChoice === "Show feature status") {
+        const refreshed = await loadRegistry(specsRoot, feature);
         emitInfo(pi, renderStatus(refreshed));
       }
     },
@@ -226,43 +235,41 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     description: "Show feature ticket progress from the registry",
     getArgumentCompletions: createFeatureCompletions,
     handler: async (args, ctx) => {
-      const resolved = await getResolvedConfig(ctx.cwd);
-      const feature = await resolveFeatureSlug(args, resolved.specsRoot, resolved.config.featureSelectorTitle, ctx);
+      const config = await loadConfig(ctx.cwd);
+      const specsRoot = resolveSpecsRoot(ctx.cwd, config);
+      const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
       if (!feature) return;
-      const registry = await loadRegistry(resolved.specsRoot, feature, resolved.config);
+      const registry = await loadRegistry(specsRoot, feature);
       emitInfo(pi, renderStatus(registry));
     },
   });
 
   pi.registerCommand("ticket-validate", {
-    description: "Validate required spec files, dependency graph, and ticket structure for a feature",
+    description: "Validate spec files, dependencies, and ticket structure",
     getArgumentCompletions: createFeatureCompletions,
     handler: async (args, ctx) => {
-      const resolved = await getResolvedConfig(ctx.cwd);
-      const feature = await resolveFeatureSlug(args, resolved.specsRoot, resolved.config.featureSelectorTitle, ctx);
+      const config = await loadConfig(ctx.cwd);
+      const specsRoot = resolveSpecsRoot(ctx.cwd, config);
+      const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
       if (!feature) return;
-
-      const validation = await validateFeature(resolved.specsRoot, feature, resolved.config);
+      const validation = await validateFeature(specsRoot, feature);
       emitInfo(pi, renderValidation(validation));
     },
   });
 }
 
-async function getResolvedConfig(cwd: string) {
-  const config = await loadConfig(cwd);
-  const specsRoot = resolveSpecsRoot(cwd, config);
-  return { config, specsRoot };
-}
+// ─── Execution flow ───────────────────────────────────────────────────────────
 
-async function runNextTicketFlow(pi: ExtensionAPI, feature: string, ctx: any, setPending: (pending: PendingExecution) => void) {
-  const resolved = await getResolvedConfig(ctx.cwd);
-  if (!(await validateBeforeExecution(pi, feature, resolved.specsRoot, resolved.config, ctx))) return;
+async function runNextTicketFlow(pi: ExtensionAPI, feature: string, ctx: { cwd: string; isIdle: () => boolean; ui: { notify: Function; select: Function; input: Function } }) {
+  const config = await loadConfig(ctx.cwd);
+  const specsRoot = resolveSpecsRoot(ctx.cwd, config);
+  if (!(await validateBeforeExecution(pi, feature, specsRoot, ctx))) return;
 
-  const registry = await loadRegistry(resolved.specsRoot, feature, resolved.config);
-  const current = registry.tickets.find((ticket) => ticket.status === "in_progress");
+  const registry = await loadRegistry(specsRoot, feature);
+  const current = registry.tickets.find((t) => t.status === "in_progress");
 
   if (current) {
-    const choice = await ctx.ui.select(`Feature ${feature} already has a ticket in progress`, [
+    const choice = await ctx.ui.select(`Feature ${feature} has a ticket in progress`, [
       `Resume ${current.id}`,
       `Mark ${current.id} done and start next`,
       `Mark ${current.id} needs-fix and retry later`,
@@ -273,109 +280,100 @@ async function runNextTicketFlow(pi: ExtensionAPI, feature: string, ctx: any, se
     if (!choice || choice === "Cancel") return;
     if (choice.startsWith("Resume ")) {
       startTicketRun(registry, current.id, "resume");
-      await saveRegistry(resolved.specsRoot, feature, resolved.config, registry);
-      await launchTicketExecution(pi, feature, current.id, resolved.config, ctx.cwd, resolved.specsRoot, "resume", setPending);
+      await saveRegistry(specsRoot, feature, registry);
+      await launchTicketExecution(pi, feature, current.id, ctx.cwd, specsRoot, "resume");
       return;
     }
     if (choice.includes("done")) {
       resolveTicketStatus(registry, current.id, "done");
-      await saveRegistry(resolved.specsRoot, feature, resolved.config, registry);
+      await saveRegistry(specsRoot, feature, registry);
     }
     if (choice.includes("needs-fix")) {
-      const note = await ctx.ui.input(`What still needs fixing in ${current.id}?`, "tests failing, edge cases, follow-up...");
+      const note = await ctx.ui.input(`What still needs fixing in ${current.id}?`, "tests failing, edge cases...");
       resolveTicketStatus(registry, current.id, "needs_fix", note || "Needs more work");
-      await saveRegistry(resolved.specsRoot, feature, resolved.config, registry);
+      await saveRegistry(specsRoot, feature, registry);
     }
     if (choice.includes("blocked")) {
       const reason = await ctx.ui.input(`Why is ${current.id} blocked?`, "dependency, bug, missing info...");
       resolveTicketStatus(registry, current.id, "blocked", reason || "Blocked by user");
-      await saveRegistry(resolved.specsRoot, feature, resolved.config, registry);
+      await saveRegistry(specsRoot, feature, registry);
     }
   }
 
-  const refreshed = await loadRegistry(resolved.specsRoot, feature, resolved.config);
+  // Refresh registry after status changes
+  const refreshed = await loadRegistry(specsRoot, feature);
   const next = findNextAvailableTicket(refreshed);
   if (!next) {
-    const blockedPending = refreshed.tickets.filter((ticket) => (ticket.status === "pending" || ticket.status === "needs_fix") && !areDependenciesDone(ticket, refreshed));
+    const blockedPending = refreshed.tickets.filter((t) =>
+      (t.status === "pending" || t.status === "needs_fix") && !areDependenciesDone(t, refreshed),
+    );
     if (blockedPending.length > 0) {
-      const lines = blockedPending.slice(0, 10).map((ticket) => {
-        const missing = ticket.dependencies.filter((dep) => getTicket(refreshed, dep)?.status !== "done");
-        return `- ${ticket.id} waiting for ${missing.join(", ")}`;
+      const lines = blockedPending.slice(0, 10).map((t) => {
+        const missing = t.dependencies.filter((d) => getTicket(refreshed, d)?.status !== "done");
+        return `- ${t.id} waiting for ${missing.join(", ")}`;
       });
-      emitInfo(pi, `No tickets are ready to run for ${feature}.\n\nBlocked pending tickets:\n${lines.join("\n")}`);
+      emitInfo(pi, `No tickets are ready for ${feature}.\n\nBlocked:\n${lines.join("\n")}`);
       return;
     }
-
     emitInfo(pi, `No pending or retryable tickets remain for ${feature}.`);
     return;
   }
 
-  const mode: TicketRunMode = next.status === "needs_fix" ? "retry" : "start";
+  const mode = next.status === "needs_fix" ? "retry" : "start";
   startTicketRun(refreshed, next.id, mode);
-  await saveRegistry(resolved.specsRoot, feature, resolved.config, refreshed);
+  await saveRegistry(specsRoot, feature, refreshed);
   emitInfo(pi, `Starting ${next.id} — ${next.title}`);
-  await launchTicketExecution(pi, feature, next.id, resolved.config, ctx.cwd, resolved.specsRoot, mode === "retry" ? "retry" : "start", setPending);
+  await launchTicketExecution(pi, feature, next.id, ctx.cwd, specsRoot, mode);
 }
 
 async function launchTicketExecution(
   pi: ExtensionAPI,
   feature: string,
   ticketId: string,
-  config: FeatureTicketFlowConfig,
   cwd: string,
   specsRoot: string,
   phase: "start" | "resume" | "retry",
-  setPending: (pending: PendingExecution) => void,
 ) {
-  const message = buildExecutionMessage(feature, ticketId, config, phase);
-  const pending: PendingExecution = { feature, ticketId, phase, cwd, specsRoot, config };
-  if (setPending) setPending(pending);
-  pi.sendUserMessage(message);
-}
+  const config = await loadConfig(cwd);
+  const resolved = resolveSpecsRoot(cwd, config);
 
-function buildExecutionMessage(feature: string, ticketId: string, config: FeatureTicketFlowConfig, phase: "start" | "resume" | "retry") {
-  const chainJson = JSON.stringify(
-    (config.executionChain || []).map((step) => ({
-      agent: step.agent,
-      task: applyTemplate(step.task, feature, ticketId, config, phase, buildSubagentChainJson(config.executionChain || [], feature, ticketId, config, phase)),
-    } satisfies ExecutionChainStep)),
-    null,
-    2,
-  );
-
-  const template = config.executionPromptTemplates?.[phase] || config.executionPromptTemplate;
-  if (template) {
-    return applyTemplate(template, feature, ticketId, config, phase, chainJson);
-  }
-
-  if (config.executionMode === "command-message") {
-    return `/${config.executionTarget} feature=${feature}; ticket=${ticketId}`;
-  }
-
-  if (config.executionMode === "custom-message") {
-    return [`feature=${feature}`, `ticket=${ticketId}`, config.executionStatusRequest].join("\n");
-  }
-
-  if (config.executionMode === "subagent-chain") {
-    return [
-      "Use the subagent tool now with this exact chain configuration:",
-      chainJson,
-      `Context: feature=${feature}; ticket=${ticketId}`,
-      "Execute only that ticket.",
-      config.executionStatusRequest,
-    ].join("\n");
-  }
-
-  return [
-    `Use the project chain \"${config.executionTarget}\" now.`,
+  // Simple convention-based message format
+  const message = [
+    `Use the project chain "ticket-tdd-execution" now.`,
     `Input: feature=${feature}; ticket=${ticketId}`,
     `Phase: ${phase}`,
     "Execute only that ticket.",
-    config.executionStatusRequest,
+    "When you finish, clearly say whether the result is APPROVED, BLOCKED, or NEEDS-FIX.",
   ].join("\n");
+
+  pendingExecution = { feature, ticketId, phase, cwd, specsRoot };
+  pi.sendUserMessage(message);
 }
 
-async function resolveFeatureSlug(args: string, specsRoot: string, title: string, ctx: any): Promise<string | undefined> {
+// ─── Validation ───────────────────────────────────────────────────────────────
+
+async function validateBeforeExecution(
+  pi: ExtensionAPI,
+  feature: string,
+  specsRoot: string,
+  ctx: { ui: { notify: Function } },
+): Promise<boolean> {
+  const validation = await validateFeature(specsRoot, feature);
+  if (validation.valid) return true;
+
+  emitInfo(pi, renderValidation(validation));
+  ctx.ui.notify(`Feature ${feature} failed validation. Run /ticket-validate ${feature} for details.`, "warning");
+  return false;
+}
+
+// ─── Feature slug resolution ──────────────────────────────────────────────────
+
+async function resolveFeatureSlug(
+  args: string,
+  specsRoot: string,
+  title: string,
+  ctx: { ui: { notify: Function; select: Function } },
+): Promise<string | undefined> {
   const trimmed = args.trim();
   if (trimmed) return trimmed;
 
@@ -390,136 +388,124 @@ async function resolveFeatureSlug(args: string, specsRoot: string, title: string
 }
 
 function createFeatureCompletions(prefix: string) {
-  return getResolvedConfig(process.cwd()).then(async ({ specsRoot }) => {
+  return loadConfig(process.cwd()).then(async (config) => {
+    const specsRoot = resolveSpecsRoot(process.cwd(), config);
     const features = await listFeatureSlugs(specsRoot);
-    const items = features.filter((slug) => slug.startsWith(prefix.trim())).map((slug) => ({ value: slug, label: slug }));
+    const items = features
+      .filter((slug) => slug.startsWith(prefix.trim()))
+      .map((slug) => ({ value: slug, label: slug }));
     return items.length > 0 ? items : null;
   });
 }
 
-async function validateBeforeExecution(pi: ExtensionAPI, feature: string, specsRoot: string, config: FeatureTicketFlowConfig, ctx: any) {
-  const validation = await validateFeature(specsRoot, feature, config);
-  if (validation.valid) return true;
+// ─── Outcome parsing ───────────────────────────────────────────────────────────
 
-  emitInfo(pi, renderValidation(validation));
-  ctx.ui.notify(`Feature ${feature} failed validation. Run /ticket-validate ${feature} for details.`, "warning");
-  return false;
-}
+type ParsedOutcome = {
+  status: "done" | "blocked" | "needs_fix";
+  note?: string;
+};
 
-function applyTemplate(
-  template: string,
-  feature: string,
-  ticketId: string,
-  config: FeatureTicketFlowConfig,
-  phase: "start" | "resume" | "retry",
-  chainJson: string,
-  reason = "",
-) {
-  return template
-    .replaceAll("{target}", config.executionTarget)
-    .replaceAll("{feature}", feature)
-    .replaceAll("{ticket}", ticketId)
-    .replaceAll("{status_request}", config.executionStatusRequest)
-    .replaceAll("{phase}", phase)
-    .replaceAll("{reason}", reason)
-    .replaceAll("{chain_json}", chainJson);
-}
+function parseOutcome(messages: Array<{ role: string; content?: unknown }>): ParsedOutcome | undefined {
+  const APPROVED = ["APPROVED"];
+  const BLOCKED = ["BLOCKED"];
+  const NEEDS_FIX = ["NEEDS-FIX", "NEEDS_FIX", "NEEDS FIX"];
 
-function buildSubagentChainJson(
-  steps: ExecutionChainStep[],
-  feature: string,
-  ticketId: string,
-  config: FeatureTicketFlowConfig,
-  phase: "start" | "resume" | "retry",
-) {
-  return JSON.stringify(
-    steps.map((step) => ({
-      agent: step.agent,
-      task: applyTemplate(step.task, feature, ticketId, config, phase, ""),
-    })),
-    null,
-    2,
-  );
-}
-
-function parseOutcome(messages: any[], config: FeatureTicketFlowConfig): ParsedOutcome | undefined {
   const assistantTexts = messages
-    .filter((message) => message?.role === "assistant")
-    .flatMap((message) => (message.content || []).filter((part: any) => part.type === "text").map((part: any) => part.text as string))
-    .slice(-config.statusParsing.maxMessagesToInspect)
+    .filter((m) => m?.role === "assistant")
+    .flatMap((m) => {
+      const content = m.content as Array<{ type: string; text?: string }> | undefined;
+      return (content || []).filter((p) => p.type === "text").map((p) => p.text as string);
+    })
+    .slice(-6)
     .reverse();
 
   for (const text of assistantTexts) {
-    const blocked = findKeywordLine(text, config.statusParsing.blocked);
-    if (blocked) return { status: "blocked", note: blocked };
+    const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
 
-    const needsFix = findKeywordLine(text, config.statusParsing.needsFix);
-    if (needsFix) return { status: "needs_fix", note: needsFix };
-
-    const approved = findKeywordLine(text, config.statusParsing.approved);
-    if (approved) return { status: "done", note: approved };
+    for (const keyword of BLOCKED) {
+      const found = lines.find((l) => l === keyword || text.includes(keyword));
+      if (found) return { status: "blocked", note: found };
+    }
+    for (const keyword of NEEDS_FIX) {
+      const found = lines.find((l) => l === keyword || text.includes(keyword));
+      if (found) return { status: "needs_fix", note: found };
+    }
+    for (const keyword of APPROVED) {
+      const found = lines.find((l) => l === keyword || text.includes(keyword));
+      if (found) return { status: "done", note: found };
+    }
   }
 
   return undefined;
 }
 
-function findKeywordLine(text: string, keywords: string[]) {
-  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
-  for (const keyword of keywords) {
-    const regex = new RegExp(`(^|\\b)${escapeRegExp(keyword)}(\\b|$)`, "i");
-    const exactLine = lines.find((line) => regex.test(line));
-    if (exactLine) return exactLine;
-    if (regex.test(text)) return keyword;
-  }
-  return undefined;
-}
+// ─── Scaffolding ───────────────────────────────────────────────────────────────
 
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-async function scaffoldFeature(specsRoot: string, feature: string, config: FeatureTicketFlowConfig) {
+async function scaffoldFeature(specsRoot: string, feature: string) {
   const featureDir = path.join(specsRoot, feature);
-  const ticketsDir = path.join(featureDir, config.ticketsDirName);
+  const ticketsDir = path.join(featureDir, "tickets");
   await fs.mkdir(ticketsDir, { recursive: true });
 
   const created: string[] = [];
-  for (const requiredFile of config.requiredSpecFiles) {
-    const absolutePath = path.join(featureDir, requiredFile);
+  const requiredFiles = ["01-master-spec.md", "02-execution-plan.md"];
+
+  for (const fileName of requiredFiles) {
+    const absolutePath = path.join(featureDir, fileName);
     if (await pathExists(absolutePath)) continue;
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-    await fs.writeFile(absolutePath, scaffoldFileTemplate(requiredFile, feature), "utf8");
+    await fs.writeFile(absolutePath, scaffoldFileTemplate(fileName, feature), "utf8");
     created.push(path.relative(specsRoot, absolutePath));
   }
 
-  if (config.scaffold.createStarterTicket) {
-    const starterTicketPath = path.join(ticketsDir, `${config.scaffold.starterTicketId}.md`);
-    if (!(await pathExists(starterTicketPath))) {
-      await fs.writeFile(
-        starterTicketPath,
-        `# ${config.scaffold.starterTicketId} — ${config.scaffold.starterTicketTitle}\n\n## Goal\nDescribe the first thin slice for ${feature}.\n\n- Requires: none\n\n## Acceptance Criteria\n- Define one verifiable outcome for this first ticket.\n`,
-        "utf8",
-      );
-      created.push(path.relative(specsRoot, starterTicketPath));
-    }
+  // Create starter ticket
+  const starterId = "STK-001";
+  const starterPath = path.join(ticketsDir, `${starterId}.md`);
+  if (!(await pathExists(starterPath))) {
+    await fs.writeFile(
+      starterPath,
+      `# ${starterId} — Initial implementation slice\n\n## Goal\nDescribe the first thin slice for ${feature}.\n\n- Requires: none\n\n## Acceptance Criteria\n- Define one verifiable outcome for this first ticket.\n`,
+      "utf8",
+    );
+    created.push(path.relative(specsRoot, starterPath));
   }
 
   return created;
 }
 
-function scaffoldFileTemplate(fileName: string, feature: string) {
-  if (fileName.startsWith("01-")) {
-    return `# ${feature} master spec\n\n## Goal\nDescribe the feature goal.\n\n## Context\nWhy this feature exists and what constraints matter.\n\n## Acceptance Criteria\n- Add machine-testable acceptance criteria here.\n`;
+function scaffoldFileTemplate(fileName: string, feature: string): string {
+  if (fileName === "01-master-spec.md") {
+    return [
+      `# ${feature} master spec`,
+      "",
+      "## Goal",
+      "Describe the feature goal.",
+      "",
+      "## Context",
+      "Why this feature exists and what constraints matter.",
+      "",
+      "## Acceptance Criteria",
+      "- Add machine-testable acceptance criteria here.",
+    ].join("\n");
   }
 
-  if (fileName.startsWith("02-")) {
-    return `# ${feature} execution plan\n\n## Planned Tickets\n- ${feature}: break the work into tickets under ./tickets\n\n## Notes\n- Keep ticket scope small and dependency-aware.\n`;
+  if (fileName === "02-execution-plan.md") {
+    return [
+      `# ${feature} execution plan`,
+      "",
+      "## Planned Tickets",
+      `- ${feature}: break the work into tickets under ./tickets`,
+      "",
+      "## Notes",
+      "- Keep ticket scope small and dependency-aware.",
+    ].join("\n");
   }
 
   return `# ${feature}\n\nAdd content for ${fileName}.\n`;
 }
 
-async function pathExists(targetPath: string) {
+// ─── Utilities ────────────────────────────────────────────────────────────────
+
+async function pathExists(targetPath: string): Promise<boolean> {
   try {
     await fs.access(targetPath);
     return true;
