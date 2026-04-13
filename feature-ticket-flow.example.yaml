@@ -1,5 +1,4 @@
 specsRoot: ./docs/technical-specs
-autoCapture: true
 defaultProfile: default
 tdd: false
 
