@@ -125,6 +125,7 @@ export async function getFeatureReviewDocuments(
   specsRoot: string,
   feature: string,
   baseDir?: string,
+  opts?: { includeTickets?: boolean },
 ): Promise<ReviewDocument[]> {
   const featureDir = baseDir || path.join(specsRoot, feature);
   const docs: ReviewDocument[] = [];
@@ -145,20 +146,23 @@ export async function getFeatureReviewDocuments(
     }
   }
 
-  const ticketsDir = path.join(featureDir, "tickets");
-  try {
-    const ticketFiles = (await fs.readdir(ticketsDir))
-      .filter((file) => file.endsWith(".md"))
-      .sort((a, b) => a.localeCompare(b));
+  // Only include tickets after user approval — not during spec/plan review.
+  if (opts?.includeTickets) {
+    const ticketsDir = path.join(featureDir, "tickets");
+    try {
+      const ticketFiles = (await fs.readdir(ticketsDir))
+        .filter((file) => file.endsWith(".md"))
+        .sort((a, b) => a.localeCompare(b));
 
-    for (const file of ticketFiles) {
-      const filePath = path.join(ticketsDir, file);
-      const content = await fs.readFile(filePath, "utf8");
-      const id = file.replace(/\.md$/, "");
-      docs.push({ label: `Ticket ${id}`, path: filePath, content });
+      for (const file of ticketFiles) {
+        const filePath = path.join(ticketsDir, file);
+        const content = await fs.readFile(filePath, "utf8");
+        const id = file.replace(/\.md$/, "");
+        docs.push({ label: `Ticket ${id}`, path: filePath, content });
+      }
+    } catch {
+      // ignore missing tickets dir
     }
-  } catch {
-    // ignore missing tickets dir
   }
 
   return docs;

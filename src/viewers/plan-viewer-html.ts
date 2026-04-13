@@ -10,6 +10,18 @@ function escapeHtml(text: string): string {
     .replace(/>/g, "&gt;");
 }
 
+function safeJsonForScript(value: unknown): string {
+  // JSON.stringify does not escape < > &. We escape them to prevent HTML/JS injection.
+  // \u003c = <, \u003e = > in JS string literals. Backticks also need escaping.
+  return JSON.stringify(value)
+    .replace(/&/g, "\\u0026")
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/`/g, "\\`")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
 export function generatePlanViewerHTML(opts: {
   markdown: string;
   title: string;
@@ -19,8 +31,10 @@ export function generatePlanViewerHTML(opts: {
   const { markdown, title, feature, port } = opts;
 
   // Build safe state for JavaScript
-  const escapedMarkdown = markdown.replace(/<\//g, "<\\/").replace(/\\/g, "\\\\");
   const escapedTitle = escapeHtml(title);
+  const markdownJson = safeJsonForScript(markdown);
+  const titleJson = safeJsonForScript(title);
+  const featureJson = safeJsonForScript(feature);
 
   return [
     '<!DOCTYPE html>',
@@ -303,7 +317,7 @@ export function generatePlanViewerHTML(opts: {
     '</div>',
     '',
     '<script>',
-    'var state = { markdown: ' + JSON.stringify(markdown) + ', title: ' + JSON.stringify(title) + ', feature: "' + feature + '", port: ' + port + ' };',
+    'var state = { markdown: ' + markdownJson + ', title: ' + titleJson + ', feature: ' + featureJson + ', port: ' + port + ' };',
     'var currentMarkdown = state.markdown;',
     '',
     'function escapeHtml(text) {',

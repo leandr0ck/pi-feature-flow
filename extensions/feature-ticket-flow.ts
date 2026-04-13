@@ -96,10 +96,8 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
           return;
         }
 
-        const registry = await loadRegistry(pending.specsRoot, pending.feature);
-        markReviewPending(pending.specsRoot, pending.feature, registry);
-        await saveRegistry(pending.specsRoot, pending.feature, registry);
-
+        // Do NOT load the ticket registry or create ticket records here.
+        // Only show spec/plan docs for review — tickets are created AFTER user approval.
         const docs = await getFeatureReviewDocuments(pending.specsRoot, pending.feature);
 
         ctx.ui.notify(`Feature ${pending.feature} ${isRevision ? "revised" : "planned"}. Opening review viewer...`, "info");
@@ -119,15 +117,23 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         const result = await openFeatureReview(pi, pending.feature, pending.specsRoot);
 
         if (result?.action === "approved") {
-          const updatedRegistry = await loadRegistry(pending.specsRoot, pending.feature);
+          // NOW create the ticket registry — only after user approval.
+          const registry = await loadRegistry(pending.specsRoot, pending.feature);
+          markReviewPending(pending.specsRoot, pending.feature, registry);
+          registry.review!.status = "approved";
+          registry.review!.reviewedAt = new Date().toISOString();
+          registry.review!.lastAction = "approve";
+          await saveRegistry(pending.specsRoot, pending.feature, registry);
           emitInfo(pi, [
             `Feature **${pending.feature}** approved.`,
             "",
+            `Tickets registered: ${registry.tickets.length}`,
+            "",
             "Starting implementation automatically ticket by ticket.",
             "",
-            renderStatus(updatedRegistry),
+            renderStatus(registry),
           ].join("\n"));
-          ctx.ui.notify(`Feature ${pending.feature} approved. Starting implementation...`, "info");
+          ctx.ui.notify(`Feature ${pending.feature} approved. ${registry.tickets.length} tickets registered. Starting implementation...`, "info");
           await startPreparedNextTicket(pi, pending.feature, pending.cwd, pending.specsRoot);
         } else if (result?.action === "changes_requested") {
           emitInfo(pi, [

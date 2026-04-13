@@ -9,6 +9,17 @@ export type ReviewDocument = {
   changed?: boolean;
 };
 
+// Escape a value for safe embedding inside a <script> block.
+// JSON.stringify does not escape < > & or backticks, which can break the script.
+function safeJsonForScript(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/&/g, "\\u0026")
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/`/g, "\\`")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
 function escapeHtml(text: string): string {
   return String(text)
     .replace(/&/g, "&amp;")
@@ -63,7 +74,7 @@ export function generateReviewViewerHTML(opts: {
 }): string {
   const { feature, documents, currentRevision, previousRevision, currentStatus, port } = opts;
 
-  const payload = JSON.stringify({ documents, currentStatus, currentRevision, previousRevision }).replace(/<\//g, "<\\/");
+  const payload = safeJsonForScript({ documents, currentStatus, currentRevision, previousRevision });
 
   return `<!DOCTYPE html>
 <html lang="en">
