@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { loadConfig, renderAgentPreferences, resolveExecutionProfile, resolveExecutionProfileByName, resolveSpecsRoot } from "../src/config.js";
+import { loadConfig, renderAgentPreferences, resolveAuthoringSkills, resolveExecutionProfile, resolveExecutionProfileByName, resolveSpecsRoot } from "../src/config.js";
 import {
   areDependenciesDone,
   findNextAvailableTicket,
@@ -39,22 +39,6 @@ let pendingExecution:
 // ─── Extension entrypoint ──────────────────────────────────────────────────────
 
 export default function featureTicketFlow(pi: ExtensionAPI) {
-  pi.on("input", async (event, ctx) => {
-    if (event.source === "extension") return { action: "continue" as const };
-
-    const text = event.text.trim();
-    const config = await loadConfig(process.cwd());
-    if (config.autoCapture === false) return { action: "continue" as const };
-    if (!shouldAutoCaptureFeatureRequest(text)) return { action: "continue" as const };
-
-    const started = await startFeatureFromDescription(pi, text, {
-      cwd: process.cwd(),
-      ui: ctx.ui,
-    });
-
-    return started ? { action: "handled" as const } : { action: "continue" as const };
-  });
-
   // ── Auto-parse outcome from agent output ──────────────────────────────────
 
   pi.on("agent_end", async (event, ctx) => {
@@ -472,7 +456,7 @@ async function launchTicketExecution(
     `Run the bundled agent-driven ticket workflow for feature \"${feature}\" and ticket \"${ticketId}\".`,
     `Phase: ${phase}`,
     `Execution profile: ${profileName}`,
-    "Prefer the bundled `feature-ticket-execution` skill if it is available.",
+    "Prefer the bundled `feature-execution` skill if it is available.",
     ...buildSubagentGuidance(profile, "execution"),
     "Execute only this ticket. Do not rewrite unrelated tickets.",
     "Read these files first:",
@@ -509,12 +493,13 @@ async function startFeatureFromDescription(pi: ExtensionAPI, description: string
   const feature = await ensureUniqueFeatureSlug(specsRoot, baseSlug);
   const created = await scaffoldFeature(specsRoot, feature);
   const { name: profileName, profile } = resolveExecutionProfile(config, `${feature} ${trimmed}`);
+  const authoringSkills = resolveAuthoringSkills(config);
 
   emitInfo(pi, `Initialized ${feature}.\n${created.map((p) => `- ${p}`).join("\n")}`);
   ctx.ui.notify(`Created feature ${feature}. Planning spec and tickets with profile ${profileName}...`, "info");
 
   pendingExecution = { kind: "feature-plan", feature, profileName, cwd, specsRoot };
-  pi.sendUserMessage(buildFeaturePlanningPrompt(feature, specsRoot, trimmed, profileName, profile));
+  pi.sendUserMessage(buildFeaturePlanningPrompt(feature, specsRoot, trimmed, profileName, profile, authoringSkills));
   return true;
 }
 
@@ -524,10 +509,11 @@ function buildFeaturePlanningPrompt(
   description: string,
   profileName: string,
   profile: ReturnType<typeof resolveExecutionProfile>["profile"],
+  authoringSkills: ReturnType<typeof resolveAuthoringSkills>,
 ): string {
   const featureDir = path.join(specsRoot, feature);
   return [
-    `Run the bundled agent-driven feature intake workflow for feature \"${feature}\".`,
+    `Run the bundled agent-driven feature intake workflow for feature "${feature}".`,
     `Feature directory: ${featureDir}`,
     `Execution profile: ${profileName}`,
     "User request:",
@@ -542,11 +528,24 @@ function buildFeaturePlanningPrompt(
     `- ticket files under ${path.join(featureDir, "tickets")}`,
     "",
     "Workflow guidance:",
-    "- Prefer the bundled `feature-factory` and `feature-ticket-execution` skills if they are available.",
+    "- Prefer the bundled `feature-planning` and `feature-execution` skills if they are available.",
+    `- Authoring skill defaults (override per project via authoringSkills in config):`,
+    `  - productRequirementsSkill: "${authoringSkills.productRequirementsSkill}"`,
+    `  - requirementsRefinementSkill: "${authoringSkills.requirementsRefinementSkill}"`,
+    `  - technicalDesignSkill: "${authoringSkills.technicalDesignSkill}"`,
+    "",
+    "Skill routing by feature complexity:",
+    "- Simple feature → use productRequirementsSkill.",
+    "- Medium feature → use productRequirementsSkill + requirementsRefinementSkill.",
+    "- Complex system → use productRequirementsSkill + requirementsRefinementSkill + technicalDesignSkill.",
+    "",
+    "Treat `01-master-spec.md` as the principal document: PRD Lite for simple work, PRD-first master spec for medium/complex work.",
     ...buildSubagentGuidance(profile, "planning"),
     "",
     "Planning rules:",
+    "- Classify the request as simple, medium, or complex before writing specs.",
     "- Write a concise but actionable master spec.",
+    "- Keep the master spec product-readable first; move deep implementation detail into technical notes or derived technical sections when needed.",
     "- Write an execution plan with clear sequencing and risks.",
     "- Create small, dependency-aware tickets as thin vertical slices.",
     "- Every ticket must include a `- Requires:` line.",
@@ -557,6 +556,7 @@ function buildFeaturePlanningPrompt(
     "When you finish, clearly say whether the result is APPROVED, BLOCKED, or NEEDS-FIX.",
   ].join("\n");
 }
+
 
 function resolveProfileForFeature(
   config: Awaited<ReturnType<typeof loadConfig>>,
@@ -587,19 +587,6 @@ function buildSubagentGuidance(
     ...(preferences.length > 0 ? ["- Use these configured agent/model preferences when delegating:", ...preferences] : []),
     "- If subagents are unavailable, do the work directly with read/write/edit/bash.",
   ];
-}
-
-function shouldAutoCaptureFeatureRequest(text: string): boolean {
-  if (!text || text.startsWith("/") || text.startsWith("!")) return false;
-  if (text.length < 24) return false;
-
-  const signals = [
-    /\b(build|create|implement|add|ship|design|plan|scaffold|develop)\b/i,
-    /\b(feature|flow|screen|page|dashboard|onboarding|checkout|integration|api|support|ability)\b/i,
-    /\bI want|we need|need to|I need|quiero|necesito|hagamos|implementemos\b/i,
-  ];
-
-  return signals.filter((pattern) => pattern.test(text)).length >= 2;
 }
 
 function deriveFeatureSlug(description: string): string {

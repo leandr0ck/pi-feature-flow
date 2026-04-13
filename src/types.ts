@@ -58,11 +58,30 @@ export type FeatureExecutionProfile = {
   agents?: Partial<Record<FeatureAgentName, FeatureAgentConfig>>;
 };
 
+/**
+ * Configurable spec-authoring skill slots.
+ * These are intentionally generic so projects can swap the underlying skills
+ * without changing the config schema semantics.
+ *
+ * @default productRequirementsSkill      = "prd-development"
+ * @default requirementsRefinementSkill  = "spec-driven-workflow"
+ * @default technicalDesignSkill          = "technical-specification"
+ */
+export type AuthoringSkillsConfig = {
+  /** Skill for writing product-facing requirements: problem framing, scope, users, success criteria. */
+  productRequirementsSkill?: string;
+  /** Skill for tightening requirements into structured FR/NFR/acceptance criteria. */
+  requirementsRefinementSkill?: string;
+  /** Skill for deeper technical design: architecture, data models, contracts, rollout. */
+  technicalDesignSkill?: string;
+};
+
 export type FeatureTicketFlowConfig = {
   /** Root directory containing feature folders. Default: "./docs/technical-specs" */
   specsRoot: string;
-  autoCapture?: boolean;
   defaultProfile?: string;
+  /** Configurable authoring skill slots. Applied project-wide across all profiles. Defaults are applied during config normalization. */
+  authoringSkills?: Partial<AuthoringSkillsConfig>;
   profiles?: Record<string, FeatureExecutionProfile>;
 };
 

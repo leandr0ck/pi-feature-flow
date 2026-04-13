@@ -1,6 +1,6 @@
 # pi-feature-flow
 
-Agent-driven Pi package for turning a plain-language feature request into:
+Agent-driven Pi package for turning a feature description into:
 - a feature folder
 - a master spec
 - an execution plan
@@ -12,7 +12,7 @@ This package now bundles its own workflow resources and the `pi-subagents` exten
 ## What it adds
 
 Commands:
-- `/feature <description>` — create a feature from a natural-language description and start the workflow
+- `/feature <description>` — create a feature from a description and start the workflow
 - `/init-feature <feature-name>` — scaffold a feature folder with spec files and a starter ticket
 - `/start-feature <feature-name>` — show status and start or resume the next ticket
 - `/next-ticket <feature-name>` — pick and execute the next available ticket automatically
@@ -29,27 +29,21 @@ Bundled resources:
 - bundled prompt template in `prompts/feature-from-description.md`
 - bundled `pi-subagents` dependency for agent delegation
 
-## New UX
+## How it works
 
-You can now just describe the functionality:
-
-```text
-quiero un onboarding con checklist, progress bar y email de bienvenida
-```
-
-Or explicitly:
+Use `/feature` with a description:
 
 ```text
 /feature Build an onboarding flow with checklist, progress bar, and welcome email
 ```
 
 The package will:
-1. derive a feature slug
-2. scaffold the feature folder
-3. ask the agent to write the master spec and execution plan
-4. ask the agent to generate dependency-aware ticket files
-5. validate the resulting structure
-6. automatically start the first executable ticket when planning is approved
+1. Derive a feature slug from the description.
+2. Scaffold the feature folder.
+3. Ask the agent to write the master spec and execution plan.
+4. Ask the agent to generate dependency-aware ticket files.
+5. Validate the resulting structure.
+6. Automatically start the first executable ticket when planning is approved.
 
 ## Expected structure
 
@@ -83,30 +77,15 @@ The extension writes `03-ticket-registry.json` inside each feature folder, stori
 pi install git:github.com/leandr0ck/pi-feature-flow
 ```
 
-## Why this no longer depends on a user-installed chain
-
-Previous versions assumed a separate chain like `ticket-tdd-execution` already existed in the user's environment.
-
-This package now avoids that hard dependency by bundling:
-- its own skills
-- its own prompt template
-- `pi-subagents` as a packaged dependency
-
-At runtime the workflow prefers subagent delegation when the bundled `subagent` tool is available, and otherwise falls back to direct agent execution.
-
 ## Configuration
 
-Preferred config file:
+Config file:
 - `.pi/feature-ticket-flow.yaml`
-
-Legacy fallback still supported:
-- `.pi/feature-ticket-flow.json`
 
 Example YAML:
 
 ```yaml
 specsRoot: ./docs/technical-specs
-autoCapture: true
 defaultProfile: default
 
 profiles:
@@ -133,8 +112,7 @@ There is also a ready-to-copy example in:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `specsRoot` | `string` | `"./docs/technical-specs"` | Root directory containing feature folders. |
-| `autoCapture` | `boolean` | `true` | Whether free-form user messages can auto-start feature creation. |
-| `defaultProfile` | `string` | `default` | Profile used when no profile rule matches. |
+| `defaultProfile` | `string` | `"default"` | Profile used when no profile rule matches. |
 | `profiles.<name>.matchAny` | `string[]` | `[]` | Keyword list used to route a feature to a specific profile. |
 | `profiles.<name>.preferSubagents` | `boolean` | `true` | If false, disables subagent-first guidance for that profile. |
 | `profiles.<name>.agents.<role>.agent` | `string` | builtin role name | Which subagent name to use for planner/worker/reviewer. |
@@ -169,12 +147,47 @@ Conventions used by the package:
 
 ## Suggested workflow
 
-1. Describe the functionality in natural language or use `/feature <description>`.
+1. Use `/feature <description>` to create a feature from a description.
 2. Let the agent generate the feature package.
 3. The package validates the generated files.
 4. When planning is approved, the package automatically starts the first ticket.
 5. Continue with `/next-ticket <slug>` until the feature is done.
 6. Override ticket outcomes manually with `/ticket-done`, `/ticket-blocked`, or `/ticket-needs-fix` when needed.
+
+## Normalized spec-authoring model
+
+This package treats `01-master-spec.md` as the **main planning document**.
+The bundled planning/execution skills are internal implementation details and should **not** be exposed in user-facing configuration.
+
+Instead, expose only the configurable **authoring skill slots** that inform how the master spec is written.
+
+### Recommended configurable skill slots
+
+| Config slot | Purpose | Default skill |
+|---|---|---|
+| `productRequirementsSkill` | Writes the product-facing requirements and problem framing for the master spec | `prd-development` |
+| `requirementsRefinementSkill` | Tightens requirements into clearer FR/NFR/acceptance criteria | `spec-driven-workflow` |
+| `technicalDesignSkill` | Adds deeper technical design when the feature needs it | `technical-specification` |
+
+### Skill routing by feature complexity
+
+| Feature type | Typical examples | Main doc shape | Configurable skill slots to use |
+|---|---|---|---|
+| Simple | banner service, contact page, small CRUD flow | PRD Lite / Feature Spec | `productRequirementsSkill` |
+| Medium | onboarding flow, dashboard workflow, feature with validations/integrations | PRD-first master spec | `productRequirementsSkill` + `requirementsRefinementSkill` |
+| Complex | stock control, billing, invoicing, finance/compliance-heavy systems | PRD-first master spec + derived technical sections/specs | `productRequirementsSkill` + `requirementsRefinementSkill` + `technicalDesignSkill` |
+
+### Document role normalization
+
+- `01-master-spec.md` is always the **principal document**.
+- For simple features, it can be a **PRD Lite**.
+- For medium and complex features, it should be a **PRD-first master spec**.
+- `02-execution-plan.md` translates the approved scope into slices, sequencing, risks, validation strategy, and ticket decomposition.
+- Deep implementation detail should not replace the master spec. Instead, it should appear as compact technical notes or as linked derived technical sections/specs.
+
+### Recommended planning rule
+
+Start from **problem, users, scope, and success criteria** before descending into architecture. If the hard part is still product ambiguity, do not start from a pure tech spec.
 
 ## Validation rules
 

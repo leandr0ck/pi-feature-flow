@@ -2,6 +2,15 @@ specsRoot: ./docs/technical-specs
 autoCapture: true
 defaultProfile: default
 
+# User-facing configurable spec-authoring skill slots.
+# The bundled planning/execution workflow skills stay internal to the package.
+# Use generic slot names so each project can swap underlying skills if needed.
+#
+# authoringSkills:
+#   productRequirementsSkill: prd-development
+#   requirementsRefinementSkill: spec-driven-workflow
+#   technicalDesignSkill: technical-specification
+
 profiles:
   default:
     preferSubagents: true

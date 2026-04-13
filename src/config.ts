@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
-import type { FeatureAgentName, FeatureExecutionProfile, FeatureTicketFlowConfig } from "./types.js";
+import type { AuthoringSkillsConfig, FeatureAgentName, FeatureExecutionProfile, FeatureTicketFlowConfig } from "./types.js";
 
 // ─── Defaults (convention over configuration) ─────────────────────────────────
 
@@ -24,17 +24,24 @@ const MAX_MESSAGES_TO_INSPECT = 6;
 const REQUIRES_LABEL = "Requires";
 const DEPENDENCY_SPLIT_PATTERN = ",";
 
+// ─── Authoring skills defaults ─────────────────────────────────────────────────
+
+
+const DEFAULT_AUTHORING_SKILLS: Required<AuthoringSkillsConfig> = {
+  productRequirementsSkill: "prd-development",
+  requirementsRefinementSkill: "spec-driven-workflow",
+  technicalDesignSkill: "technical-specification",
+};
+
 // ─── Config loading ───────────────────────────────────────────────────────────
 
 const YAML_CONFIG_FILE = ".pi/feature-ticket-flow.yaml";
 const YML_CONFIG_FILE = ".pi/feature-ticket-flow.yml";
-const JSON_CONFIG_FILE = ".pi/feature-ticket-flow.json";
 
 const DEFAULT_PROFILE = "default";
 
 const DEFAULT_CONFIG: FeatureTicketFlowConfig = {
   specsRoot: DEFAULT_SPECS_ROOT,
-  autoCapture: true,
   defaultProfile: DEFAULT_PROFILE,
   profiles: {
     [DEFAULT_PROFILE]: {
@@ -49,14 +56,12 @@ const DEFAULT_CONFIG: FeatureTicketFlowConfig = {
 };
 
 export async function loadConfig(cwd: string): Promise<FeatureTicketFlowConfig> {
-  const candidates = [YAML_CONFIG_FILE, YML_CONFIG_FILE, JSON_CONFIG_FILE].map((file) => path.resolve(cwd, file));
+  const candidates = [YAML_CONFIG_FILE, YML_CONFIG_FILE].map((file) => path.resolve(cwd, file));
 
   for (const configPath of candidates) {
     try {
       const raw = await fs.readFile(configPath, "utf8");
-      const parsed = configPath.endsWith(".json")
-        ? JSON.parse(raw) as Partial<FeatureTicketFlowConfig>
-        : parseYaml(raw) as Partial<FeatureTicketFlowConfig>;
+      const parsed = parseYaml(raw) as Partial<FeatureTicketFlowConfig>;
       return normalizeConfig(parsed);
     } catch {
       // try next config path
@@ -72,13 +77,23 @@ function normalizeConfig(parsed: Partial<FeatureTicketFlowConfig>): FeatureTicke
     ...(DEFAULT_CONFIG.profiles || {}),
     ...(parsed.profiles || {}),
   };
-
   return {
     specsRoot: parsed.specsRoot || DEFAULT_SPECS_ROOT,
-    autoCapture: parsed.autoCapture ?? true,
     defaultProfile,
+    authoringSkills: normalizeAuthoringSkills(parsed.authoringSkills),
     profiles: mergedProfiles,
   };
+}
+
+function normalizeAuthoringSkills(
+  input?: Partial<AuthoringSkillsConfig>,
+): Required<AuthoringSkillsConfig> {
+  return {
+    productRequirementsSkill: input?.productRequirementsSkill ?? DEFAULT_AUTHORING_SKILLS.productRequirementsSkill,
+    requirementsRefinementSkill:
+      input?.requirementsRefinementSkill ?? DEFAULT_AUTHORING_SKILLS.requirementsRefinementSkill,
+    technicalDesignSkill: input?.technicalDesignSkill ?? DEFAULT_AUTHORING_SKILLS.technicalDesignSkill,
+  } as Required<AuthoringSkillsConfig>;
 }
 
 export function resolveExecutionProfile(
@@ -142,6 +157,16 @@ export function renderAgentPreferences(profile: FeatureExecutionProfile): string
 
 export function resolveSpecsRoot(cwd: string, config: FeatureTicketFlowConfig): string {
   return path.resolve(cwd, config.specsRoot);
+}
+
+/**
+ * Returns the fully-resolved authoring skills for a config, with defaults applied.
+ * Note: normalizeAuthoringSkills guarantees all fields are present.
+ */
+export function resolveAuthoringSkills(
+  config: FeatureTicketFlowConfig,
+): Required<AuthoringSkillsConfig> {
+  return (config.authoringSkills ?? DEFAULT_AUTHORING_SKILLS) as Required<AuthoringSkillsConfig>;
 }
 
 // ─── Exported constants for use in other modules ──────────────────────────────

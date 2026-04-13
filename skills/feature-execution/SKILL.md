@@ -1,5 +1,5 @@
 ---
-name: feature-ticket-execution
+name: feature-execution
 description: Execute a single feature ticket as a thin vertical slice, using the feature spec, execution plan, and ticket file as the source of truth. Use when implementing or retrying one ticket in the bundled feature workflow.
 ---
 
