@@ -1,17 +1,14 @@
 # pi-feature-flow
 
-Agent-driven Pi package for turning a feature description into:
+Pi package for turning a feature description into:
 - a feature folder
 - a master spec
 - an execution plan
 - dependency-aware tickets
 - automatic next-ticket execution with registry tracking
 
-This package now bundles its own workflow resources and the `pi-subagents` extension, so users do **not** need to preinstall a separate chain just to make it work.
+## Commands
 
-## What it adds
-
-Commands:
 - `/feature <description>` — create a feature from a description and start the workflow
 - `/init-feature <feature-name>` — scaffold a feature folder with spec files and a starter ticket
 - `/start-feature <feature-name>` — show status and start or resume the next ticket
@@ -21,31 +18,15 @@ Commands:
 - `/ticket-done <feature-name>` — mark the current in-progress ticket as done
 - `/ticket-blocked <feature-name>` — mark the current in-progress ticket as blocked
 - `/ticket-needs-fix <feature-name>` — mark the current in-progress ticket as needs-fix and retry
-- `/feature-profile <feature-name> [profile]` — show the current profile for a feature, or set it to a different one
+- `/feature-profile <feature-name> [profile]` — show or change the profile used for a feature
 
-Bundled resources:
-- extension orchestrator in `extensions/feature-ticket-flow.ts`
-- bundled skills in `skills/`
-- bundled prompt template in `prompts/feature-from-description.md`
-- bundled `pi-subagents` dependency for agent delegation
+## Installation
 
-## How it works
-
-Use `/feature` with a description:
-
-```text
-/feature Build an onboarding flow with checklist, progress bar, and welcome email
+```bash
+pi install git:github.com/leandr0ck/pi-feature-flow
 ```
 
-The package will:
-1. Derive a feature slug from the description.
-2. Scaffold the feature folder.
-3. Ask the agent to write the master spec and execution plan.
-4. Ask the agent to generate dependency-aware ticket files.
-5. Validate the resulting structure.
-6. Automatically start the first executable ticket when planning is approved.
-
-## Expected structure
+## What it creates
 
 ```text
 ./docs/technical-specs/
@@ -59,34 +40,54 @@ The package will:
       ...
 ```
 
-Each ticket declares dependencies with a line like:
+Each ticket must declare dependencies with a line like:
 
 ```md
-# STK-002 — Second ticket
-
 - Requires: STK-001
 ```
 
-## Registry file
+## How it works
 
-The extension writes `03-ticket-registry.json` inside each feature folder, storing ticket status, timestamps, blocked reasons, and run history.
+Run:
 
-## Installation
-
-```bash
-pi install git:github.com/leandr0ck/pi-feature-flow
+```text
+/feature Build an onboarding flow with checklist, progress bar, and welcome email
 ```
+
+The package will:
+1. Derive a feature slug from the description.
+2. Scaffold the feature folder.
+3. Generate the master spec and execution plan.
+4. Generate dependency-aware ticket files.
+5. Validate the resulting structure.
+6. Start the first executable ticket when planning is approved.
 
 ## Configuration
 
 Config file:
 - `.pi/feature-ticket-flow.yaml`
 
-Example YAML:
+There is a ready-to-copy example in:
+- `feature-ticket-flow.example.yaml`
+
+### Minimal config
 
 ```yaml
 specsRoot: ./docs/technical-specs
 defaultProfile: default
+```
+
+### Recommended config
+
+```yaml
+specsRoot: ./docs/technical-specs
+defaultProfile: default
+tdd: false
+
+authoringSkills:
+  productRequirementsSkill: prd-development
+  requirementsRefinementSkill: spec-driven-workflow
+  technicalDesignSkill: technical-specification
 
 profiles:
   default:
@@ -98,107 +99,71 @@ profiles:
         model: anthropic/claude-sonnet-4
       reviewer:
         model: openai/gpt-5.4
-
-  frontend:
-    matchAny: [ui, dashboard, page, onboarding]
-    agents:
-      reviewer:
-        model: openai/gpt-5.4
 ```
 
-There is also a ready-to-copy example in:
-- `feature-ticket-flow.example.yaml`
+### Supported fields
 
 | Field | Type | Default | Description |
-|-------|------|---------|-------------|
+|---|---|---|---|
 | `specsRoot` | `string` | `"./docs/technical-specs"` | Root directory containing feature folders. |
 | `defaultProfile` | `string` | `"default"` | Profile used when no profile rule matches. |
-| `profiles.<name>.matchAny` | `string[]` | `[]` | Keyword list used to route a feature to a specific profile. |
-| `tdd` | `boolean` | `false` | Enables TDD-oriented planning and execution guidance. The project is responsible for having a usable test setup. |
+| `tdd` | `boolean` | `false` | Adds TDD-oriented guidance to planning and execution prompts. The project is responsible for having a usable test setup. |
+| `authoringSkills.productRequirementsSkill` | `string` | `prd-development` | Skill used for product-facing requirements and problem framing. |
+| `authoringSkills.requirementsRefinementSkill` | `string` | `spec-driven-workflow` | Skill used to refine requirements into clearer FR/NFR/acceptance criteria. |
+| `authoringSkills.technicalDesignSkill` | `string` | `technical-specification` | Skill used for deeper technical design when needed. |
+| `profiles.<name>.matchAny` | `string[]` | `[]` | Keywords used to route a feature to a profile. |
 | `profiles.<name>.preferSubagents` | `boolean` | `true` | If false, disables subagent-first guidance for that profile. |
-| `profiles.<name>.agents.<role>.agent` | `string` | builtin role name | Which subagent name to use for planner/worker/reviewer. |
+| `profiles.<name>.agents.<role>.agent` | `string` | builtin role name | Subagent name to use for planner/worker/reviewer. |
 | `profiles.<name>.agents.<role>.model` | `string` | unset | Preferred model for that role. |
 | `profiles.<name>.agents.<role>.thinking` | `string` | unset | Preferred thinking level for that role. |
 
-This lets each user choose different models per role. For example:
-- reviewer on `openai/gpt-5.4`
-- worker on `anthropic/claude-sonnet-4`
-- a separate `frontend` or `backend` profile for different feature types
+## Master spec model
 
-The selected profile is persisted in the feature registry, so once a feature starts with `frontend`, later `/next-ticket` or `/start-feature` runs keep using that same profile instead of re-matching from scratch.
+`01-master-spec.md` is always the main planning document.
 
-To change a profile manually, use:
+- Simple feature → PRD Lite / Feature Spec
+- Medium feature → PRD-first master spec
+- Complex feature → PRD-first master spec plus deeper technical sections when needed
+
+### Authoring skill routing
+
+| Feature type | Skill slots used |
+|---|---|
+| Simple | `productRequirementsSkill` |
+| Medium | `productRequirementsSkill` + `requirementsRefinementSkill` |
+| Complex | `productRequirementsSkill` + `requirementsRefinementSkill` + `technicalDesignSkill` |
+
+## Profiles
+
+Profiles let you choose different agent/model preferences by feature type.
+
+Example:
+- `frontend` profile for UI and onboarding work
+- `backend` profile for API, queue, and DB work
+- `direct-mode` profile when you want no subagent delegation
+
+The selected profile is persisted in the feature registry, so later `/next-ticket` or `/start-feature` runs keep using the same profile.
+
+To change a profile manually:
 
 ```bash
 /feature-profile my-feature frontend
 ```
 
-Without a second argument, the command shows the current profile and all available options:
+To inspect the current profile and options:
 
 ```bash
 /feature-profile my-feature
 ```
 
-Conventions used by the package:
-- `tickets/` subdirectory inside each feature
-- `03-ticket-registry.json` as the registry filename
-- `01-master-spec.md` and `02-execution-plan.md` as required spec files
-- `STK-001` as the starter ticket id
-- `APPROVED` / `BLOCKED` / `NEEDS-FIX` as status keywords
-
 ## Suggested workflow
 
-1. Use `/feature <description>` to create a feature from a description.
-2. Let the agent generate the feature package.
-3. The package validates the generated files.
-4. When planning is approved, the package automatically starts the first ticket.
-5. Continue with `/next-ticket <slug>` until the feature is done.
-6. Override ticket outcomes manually with `/ticket-done`, `/ticket-blocked`, or `/ticket-needs-fix` when needed.
-
-## Normalized spec-authoring model
-
-This package treats `01-master-spec.md` as the **main planning document**.
-The bundled planning/execution skills are internal implementation details and should **not** be exposed in user-facing configuration.
-
-Instead, expose only the configurable **authoring skill slots** that inform how the master spec is written.
-
-### Recommended configurable skill slots
-
-| Config slot | Purpose | Default skill |
-|---|---|---|
-| `productRequirementsSkill` | Writes the product-facing requirements and problem framing for the master spec | `prd-development` |
-| `requirementsRefinementSkill` | Tightens requirements into clearer FR/NFR/acceptance criteria | `spec-driven-workflow` |
-| `technicalDesignSkill` | Adds deeper technical design when the feature needs it | `technical-specification` |
-
-### Optional TDD toggle
-
-Use a simple project-level boolean in config:
-
-```yaml
-tdd: true
-```
-
-When `tdd: true`, planning and ticket execution prompts tell the agent to prefer a TDD-style loop for implementation work. The package does **not** verify that a test harness exists — that responsibility remains with the project/user.
-
-### Skill routing by feature complexity
-
-| Feature type | Typical examples | Main doc shape | Configurable skill slots to use |
-|---|---|---|---|
-| Simple | banner service, contact page, small CRUD flow | PRD Lite / Feature Spec | `productRequirementsSkill` |
-| Medium | onboarding flow, dashboard workflow, feature with validations/integrations | PRD-first master spec | `productRequirementsSkill` + `requirementsRefinementSkill` |
-| Complex | stock control, billing, invoicing, finance/compliance-heavy systems | PRD-first master spec + derived technical sections/specs | `productRequirementsSkill` + `requirementsRefinementSkill` + `technicalDesignSkill` |
-
-### Document role normalization
-
-- `01-master-spec.md` is always the **principal document**.
-- For simple features, it can be a **PRD Lite**.
-- For medium and complex features, it should be a **PRD-first master spec**.
-- `02-execution-plan.md` translates the approved scope into slices, sequencing, risks, validation strategy, and ticket decomposition.
-- Deep implementation detail should not replace the master spec. Instead, it should appear as compact technical notes or as linked derived technical sections/specs.
-
-### Recommended planning rule
-
-Start from **problem, users, scope, and success criteria** before descending into architecture. If the hard part is still product ambiguity, do not start from a pure tech spec.
+1. Use `/feature <description>`.
+2. Review the generated master spec and execution plan.
+3. Approve planning.
+4. Let the package start the first ticket.
+5. Continue with `/next-ticket <feature>` until the feature is done.
+6. Use `/ticket-done`, `/ticket-blocked`, or `/ticket-needs-fix` if you need to override the current ticket state.
 
 ## Validation rules
 
