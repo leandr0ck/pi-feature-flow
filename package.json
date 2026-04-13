@@ -1,8 +1,14 @@
 {
   "name": "pi-feature-flow",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "description": "Pi extension for feature-based ticket execution with persistent registry and next-ticket automation",
-  "keywords": ["pi-package", "pi", "extension", "workflow", "tickets"],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "extension",
+    "workflow",
+    "tickets"
+  ],
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -35,7 +41,11 @@
       "./node_modules/pi-subagents/index.ts",
       "./node_modules/pi-subagents/notify.ts"
     ],
-    "skills": ["./skills"],
-    "prompts": ["./prompts"]
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts"
+    ]
   }
 }
