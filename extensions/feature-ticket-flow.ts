@@ -1,178 +1,239 @@
 import path from "node:path";
+import { promises as fsPromises } from "node:fs";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import {
-  loadConfig,
-  resolveAuthoringSkills,
-  resolveSpecsRoot,
-  resolveTddEnabled,
-} from "../src/config.js";
+import { loadConfig, resolveSpecsRoot, resolveTddEnabled } from "../src/config.js";
 import {
   areDependenciesDone,
+  featureCostPath,
+  featureMemoryPath,
+  readFeatureCost,
+  workerContextPath,
+  testerNotesPath,
   findNextAvailableTicket,
   getTicket,
+  listFeatureSlugs,
   loadRegistry,
+  recordTicketCost,
   resolveTicketStatus,
   saveRegistry,
   startTicketRun,
 } from "../src/registry.js";
 import { renderStatus, renderValidation } from "../src/render.js";
-import {
-  maybeContinuePlanning,
-  resolveFeatureSlug,
-  validateBeforeExecution,
-} from "../src/feature-flow/guards.js";
+import { resolveFeatureSlug, validateBeforeExecution } from "../src/feature-flow/guards.js";
 import {
   buildFeaturePlanningPrompt,
-  buildFeatureRevisionPrompt,
   buildSubagentGuidance,
-  resolveProfileForFeature,
+  buildTesterPrompt,
+  buildTicketExecutionPrompt,
+  resolveSpecFileInFeatureDir,
 } from "../src/feature-flow/prompts.js";
 import {
   deriveFeatureSlug,
+  ensureFeatureDir,
   ensureUniqueFeatureSlug,
-  scaffoldFeature,
+  pathExists,
+  scaffoldSpecFile,
 } from "../src/feature-flow/scaffold.js";
 import {
   emitInfo,
+  extractUsage,
   getPendingExecution,
+  loadCheckpoint,
+  clearCheckpoint,
+  persistCheckpoint,
   outcomeLabel,
   parseOutcome,
   setPendingExecution,
 } from "../src/feature-flow/state.js";
 import { createFeatureCompletions } from "../src/feature-flow/ui.js";
-import {
-  canExecuteFeature,
-  formatReviewSummary,
-  getFeatureReviewDocuments,
-  markReviewPending,
-} from "../src/feature-flow/review.js";
-import { openFeatureReview } from "./feature-review-viewer.js";
 import { validateFeature } from "../src/validation.js";
 
 type CommandContext = {
   cwd: string;
   isIdle: () => boolean;
   ui: {
-    notify: Function;
+    notify: (msg: string, type?: "error" | "warning" | "info") => void;
     select: Function;
     input: Function;
   };
 };
 
-type FeatureFlowContext = {
-  cwd?: string;
-  ui: {
-    notify: Function;
-  };
-};
-
 export default function featureTicketFlow(pi: ExtensionAPI) {
+  // ── Checkpoint recovery on session_start ──────────────────────────────────────
+  pi.on("session_start", async (_event, ctx) => {
+    // Only attempt recovery on startup/reload — skip for new/fork sessions
+    if (_event.reason !== "startup" && _event.reason !== "reload") return;
+
+    const config = await loadConfig(ctx.cwd);
+    const specsRoot = resolveSpecsRoot(ctx.cwd, config);
+    const features = await listFeatureSlugs(specsRoot);
+
+    for (const feature of features) {
+      const checkpoint = await loadCheckpoint(specsRoot, feature);
+      if (!checkpoint) continue;
+
+      // Verify the ticket is still in_progress in the registry before resuming
+      if (checkpoint.kind === "ticket-tester" || checkpoint.kind === "ticket-execution") {
+        try {
+          const registry = await loadRegistry(specsRoot, feature);
+          const ticket = getTicket(registry, checkpoint.ticketId);
+          if (ticket?.status !== "in_progress") {
+            // Registry already resolved — stale checkpoint
+            await clearCheckpoint(specsRoot, feature);
+            continue;
+          }
+        } catch {
+          await clearCheckpoint(specsRoot, feature);
+          continue;
+        }
+      }
+
+      emitInfo(
+        pi,
+        [
+          `⚠️  Checkpoint found for **${feature}** (${checkpoint.kind}).`,
+          `Run \`/start-feature ${feature}\` to resume.`,
+        ].join("\n"),
+      );
+      // Only recover the first one — user can resume manually after that
+      return;
+    }
+  });
+
+  // ── Auto-advance on agent_end ──────────────────────────────────────────────
   pi.on("agent_end", async (event, ctx) => {
     const pending = getPendingExecution();
     if (!pending) return;
 
     setPendingExecution(undefined);
+    if ("specsRoot" in pending && "feature" in pending) {
+      await clearCheckpoint(
+        (pending as { specsRoot: string }).specsRoot,
+        (pending as { feature: string }).feature,
+      );
+    }
     const parsed = parseOutcome(event.messages);
     if (!parsed) return;
 
     try {
-      if (pending.kind === "feature-plan" || pending.kind === "feature-revision") {
-        const isRevision = pending.kind === "feature-revision";
+      if (pending.kind === "feature-plan") {
         const label = outcomeLabel(parsed.status);
-        emitInfo(pi, `${isRevision ? "Feature revision" : "Feature planning"} for ${pending.feature}: ${label}${parsed.note ? `\n${parsed.note}` : ""}`);
+        emitInfo(
+          pi,
+          `Feature planning for **${pending.feature}**: ${label}${parsed.note ? `\n${parsed.note}` : ""}`,
+        );
 
         if (parsed.status !== "done") {
           ctx.ui.notify(
-            `${isRevision ? "Feature revision" : "Feature planning"} for ${pending.feature}: ${label}`,
+            `Feature planning for ${pending.feature}: ${label}`,
             parsed.status === "blocked" ? "warning" : "info",
           );
           return;
         }
 
+        // Validate that the planner produced the expected files
         const validation = await validateFeature(pending.specsRoot, pending.feature);
         emitInfo(pi, renderValidation(validation));
+
         if (!validation.valid) {
-          ctx.ui.notify(`Feature ${pending.feature} was ${isRevision ? "revised" : "planned"} but failed validation.`, "warning");
+          ctx.ui.notify(
+            `Feature ${pending.feature} was planned but failed validation. Check the files.`,
+            "warning",
+          );
           return;
         }
 
-        // Do NOT load the ticket registry or create ticket records here.
-        // Only show spec/plan docs for review — tickets are created AFTER user approval.
-        const docs = await getFeatureReviewDocuments(pending.specsRoot, pending.feature);
-
-        ctx.ui.notify(`Feature ${pending.feature} ${isRevision ? "revised" : "planned"}. Opening review viewer...`, "info");
-        emitInfo(pi, [
-          `Feature ${isRevision ? "revision" : "planning"} for **${pending.feature}**: APPROVED`,
-          "",
-          isRevision
-            ? "The spec package was updated from review feedback and is ready for another pass."
-            : "The spec and execution plan are ready for your review.",
-          docs.length > 0
-            ? `Documents ready: ${docs.map((d) => d.label).join(", ")}`
-            : "No documents found.",
-          "",
-          "Opening review viewer in browser...",
-        ].join("\n"));
-
-        const result = await openFeatureReview(pi, pending.feature, pending.specsRoot);
-
-        if (result?.action === "approved") {
-          // NOW create the ticket registry — only after user approval.
-          const registry = await loadRegistry(pending.specsRoot, pending.feature);
-          markReviewPending(pending.specsRoot, pending.feature, registry);
-          registry.review!.status = "approved";
-          registry.review!.reviewedAt = new Date().toISOString();
-          registry.review!.lastAction = "approve";
-          await saveRegistry(pending.specsRoot, pending.feature, registry);
-          emitInfo(pi, [
-            `Feature **${pending.feature}** approved.`,
+        // Load registry and kick off first ticket automatically
+        const registry = await loadRegistry(pending.specsRoot, pending.feature);
+        emitInfo(
+          pi,
+          [
+            `Feature **${pending.feature}** plan ready.`,
             "",
             `Tickets registered: ${registry.tickets.length}`,
             "",
             "Starting implementation automatically ticket by ticket.",
             "",
             renderStatus(registry),
-          ].join("\n"));
-          ctx.ui.notify(`Feature ${pending.feature} approved. ${registry.tickets.length} tickets registered. Starting implementation...`, "info");
-          await startPreparedNextTicket(pi, pending.feature, pending.cwd, pending.specsRoot);
-        } else if (result?.action === "changes_requested") {
-          emitInfo(pi, [
-            `Feature **${pending.feature}**: changes requested.`,
-            "",
-            `Feedback: ${result.comment}`,
-            "",
-            "You can revise the docs now or later.",
-          ].join("\n"));
-          const choice = await ctx.ui.select(`Feature ${pending.feature} needs changes`, [
-            "Revise docs now",
-            "Leave for manual revision",
-          ]);
-          if (choice === "Revise docs now") {
-            await reviseFeatureFromFeedback(pi, pending.feature, pending.specsRoot, pending.cwd, result.comment);
-          }
-        } else {
-          emitInfo(pi, [
-            `Feature **${pending.feature}** is pending review.`,
-            "",
-            `Run \`/review-feature ${pending.feature}\` to open the viewer.`,
-            "Run \`/approve-feature ${pending.feature}\` for quick approval.",
-            "Run \`/request-feature-changes ${pending.feature} <comment>\` to request changes.",
-            "Run \`/revise-feature ${pending.feature} <feedback>\` to apply review feedback with the agent.",
-          ].join("\n"));
-        }
+          ].join("\n"),
+        );
+        ctx.ui.notify(
+          `Feature ${pending.feature} planned. ${registry.tickets.length} tickets. Starting implementation...`,
+          "info",
+        );
+        await startPreparedNextTicket(pi, pending.feature, pending.cwd, pending.specsRoot);
         return;
       }
 
+      // ticket-tester outcome: tester finished — decide whether to hand off to the worker
+      if (pending.kind === "ticket-tester") {
+        const label = outcomeLabel(parsed.status);
+        const usage = extractUsage(event.messages as Array<{ role: string; content?: unknown; usage?: unknown }>);
+        const now = new Date().toISOString();
+
+        // Record tester cost
+        await recordTicketCost(pending.specsRoot, pending.feature, pending.ticketId, "tester", 0, {
+          ...usage,
+          recordedAt: now,
+        });
+
+        emitInfo(
+          pi,
+          `Tester phase for **${pending.ticketId}** (${pending.feature}): ${label}${parsed.note ? `\n${parsed.note}` : ""}${usage.costUsd > 0 ? ` — $${usage.costUsd.toFixed(4)}` : ""}`,
+        );
+
+        if (parsed.status !== "done") {
+          // Tester blocked or needs-fix — surface to user, do not advance to worker
+          const registry = await loadRegistry(pending.specsRoot, pending.feature);
+          resolveTicketStatus(registry, pending.ticketId, parsed.status, parsed.note);
+          await saveRegistry(pending.specsRoot, pending.feature, registry);
+          ctx.ui.notify(
+            `Tester for ${pending.ticketId}: ${label}. Fix the tester phase before proceeding.`,
+            parsed.status === "blocked" ? "warning" : "info",
+          );
+          return;
+        }
+
+        // Tester approved — hand off to worker chain
+        ctx.ui.notify(`Tester done for ${pending.ticketId}. Starting worker...`, "info");
+        await launchWorkerChain(pi, pending.feature, pending.ticketId, pending.cwd, pending.specsRoot, "start");
+        return;
+      }
+
+      // ticket-execution outcome (worker → reviewer → chief)
       const registry = await loadRegistry(pending.specsRoot, pending.feature);
       const ticket = getTicket(registry, pending.ticketId);
       if (!ticket) return;
 
+      // Record cost and usage for this run
+      const usage = extractUsage(event.messages as Array<{ role: string; content?: unknown; usage?: unknown }>);
+      const runIndex = ticket.runs.length;
+      const now = new Date().toISOString();
+
       resolveTicketStatus(registry, pending.ticketId, parsed.status, parsed.note);
+      // Attach usage to the current run (last one, just added by resolveTicketStatus)
+      if (ticket.runs.length > 0) {
+        const lastRun = ticket.runs[ticket.runs.length - 1]!;
+        lastRun.usage = usage;
+      }
       await saveRegistry(pending.specsRoot, pending.feature, registry);
 
+      // Record feature-level cost
+      await recordTicketCost(pending.specsRoot, pending.feature, pending.ticketId, "worker", runIndex, {
+        ...usage,
+        recordedAt: now,
+      });
+
       const label = outcomeLabel(parsed.status);
-      emitInfo(pi, `Auto-updated ${pending.ticketId} for ${pending.feature}: ${label}${parsed.note ? `\n${parsed.note}` : ""}`);
-      ctx.ui.notify(`Ticket ${pending.ticketId}: ${label}`, parsed.status === "blocked" ? "warning" : "info");
+      const costStr = usage.costUsd > 0 ? ` — $${usage.costUsd.toFixed(4)}` : "";
+      emitInfo(
+        pi,
+        `Auto-updated ${pending.ticketId} for ${pending.feature}: ${label}${parsed.note ? `\n${parsed.note}` : ""}${costStr}`,
+      );
+      ctx.ui.notify(
+        `Ticket ${pending.ticketId}: ${label}`,
+        parsed.status === "blocked" ? "warning" : "info",
+      );
 
       if (parsed.status === "done") {
         await startPreparedNextTicket(pi, pending.feature, pending.cwd, pending.specsRoot);
@@ -183,27 +244,76 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     }
   });
 
-  pi.registerCommand("feature", {
-    description: "Create a feature from a natural-language description and start the workflow",
-    handler: async (args, ctx) => {
+  // ── /plan-feature ──────────────────────────────────────────────────────────
+  pi.registerCommand("plan-feature", {
+    description: "Plan a feature from an existing spec document (creates execution plan + tickets)",
+    getArgumentCompletions: createFeatureCompletions,
+    handler: async (args, ctx: CommandContext) => {
       if (!ctx.isIdle()) {
         ctx.ui.notify("Agent is busy. Wait until it finishes.", "warning");
         return;
       }
 
-      const description = args.trim();
-      if (!description) {
-        ctx.ui.notify("Usage: /feature <describe the functionality>", "error");
+      const trimmed = args.trim();
+      const config = await loadConfig(ctx.cwd);
+      const specsRoot = resolveSpecsRoot(ctx.cwd, config);
+
+      // If no slug given, pick from list
+      const feature = await resolveFeatureSlug(trimmed, specsRoot, "Choose feature to plan", ctx);
+      if (!feature) return;
+
+      const featureDir = path.join(specsRoot, feature);
+
+      // Determine spec file
+      const defaultSpecPath = resolveSpecFileInFeatureDir(featureDir);
+      let specPath = defaultSpecPath;
+
+      if (!(await pathExists(specPath))) {
+        ctx.ui.notify(
+          `Spec file not found: ${specPath}. Create 01-master-spec.md in the feature directory first.`,
+          "error",
+        );
+        emitInfo(
+          pi,
+          [
+            `Feature **${feature}**: spec file not found.`,
+            "",
+            `Expected: ${specPath}`,
+            "",
+            "Create your spec document at that path, then run `/plan-feature ${feature}` again.",
+            "Or run `/init-feature ${feature}` to scaffold a stub spec.",
+          ].join("\n"),
+        );
         return;
       }
 
-      await startFeatureFromDescription(pi, description, ctx);
+      const tddEnabled = resolveTddEnabled(config);
+      await ensureFeatureDir(specsRoot, feature);
+
+      emitInfo(
+        pi,
+        [
+          `Planning **${feature}** from spec: ${specPath}`,
+          tddEnabled ? "TDD mode: enabled" : "",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      );
+      ctx.ui.notify(`Planning ${feature} from spec. Creating execution plan and tickets...`, "info");
+
+      const planPending = { kind: "feature-plan" as const, feature, cwd: ctx.cwd, specsRoot };
+      setPendingExecution(planPending);
+      await persistCheckpoint(planPending);
+      pi.sendUserMessage(
+        buildFeaturePlanningPrompt(feature, specsRoot, specPath, config, tddEnabled),
+      );
     },
   });
 
+  // ── /init-feature ──────────────────────────────────────────────────────────
   pi.registerCommand("init-feature", {
-    description: "Scaffold a feature folder with spec files and starter ticket",
-    handler: async (args, ctx) => {
+    description: "Create a feature directory with a stub spec file",
+    handler: async (args, ctx: CommandContext) => {
       const slug = args.trim();
       if (!slug) {
         ctx.ui.notify("Usage: /init-feature <slug>", "error");
@@ -212,18 +322,32 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
 
       const config = await loadConfig(ctx.cwd);
       const specsRoot = resolveSpecsRoot(ctx.cwd, config);
-      const created = await scaffoldFeature(specsRoot, slug, true);
-      emitInfo(pi, `Initialized ${slug}.\n${created.map((entry) => `- ${entry}`).join("\n")}`);
+      const featureDir = await ensureFeatureDir(specsRoot, slug);
+      const created = await scaffoldSpecFile(featureDir, slug);
 
-      const validation = await validateFeature(specsRoot, slug);
-      emitInfo(pi, renderValidation(validation));
+      if (created) {
+        emitInfo(
+          pi,
+          [
+            `Initialized **${slug}**.`,
+            `- Created: ${path.join(featureDir, "01-master-spec.md")}`,
+            "",
+            "Fill in the spec, then run `/plan-feature ${slug}` to generate tickets.",
+          ].join("\n"),
+        );
+      } else {
+        emitInfo(pi, `Feature directory for **${slug}** already exists. Spec file unchanged.`);
+      }
+
+      ctx.ui.notify(`Feature ${slug} initialized.`, "info");
     },
   });
 
+  // ── /start-feature ─────────────────────────────────────────────────────────
   pi.registerCommand("start-feature", {
     description: "Show feature status and start or resume the next ticket",
     getArgumentCompletions: createFeatureCompletions,
-    handler: async (args, ctx) => {
+    handler: async (args, ctx: CommandContext) => {
       if (!ctx.isIdle()) {
         ctx.ui.notify("Agent is busy. Wait until it finishes.", "warning");
         return;
@@ -234,7 +358,6 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
       if (!feature) return;
 
-      if (await maybeContinuePlanning(pi, feature, specsRoot, ctx)) return;
       if (!(await validateBeforeExecution(pi, feature, specsRoot, ctx))) return;
 
       const registry = await loadRegistry(specsRoot, feature);
@@ -251,10 +374,11 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     },
   });
 
+  // ── /next-ticket ───────────────────────────────────────────────────────────
   pi.registerCommand("next-ticket", {
     description: "Pick and execute the next available ticket automatically",
     getArgumentCompletions: createFeatureCompletions,
-    handler: async (args, ctx) => {
+    handler: async (args, ctx: CommandContext) => {
       if (!ctx.isIdle()) {
         ctx.ui.notify("Agent is busy. Wait until it finishes.", "warning");
         return;
@@ -265,15 +389,21 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
       if (!feature) return;
 
-      if (await maybeContinuePlanning(pi, feature, specsRoot, ctx)) return;
-      await runNextTicketFlow(pi, feature, ctx);
+      try {
+        await runNextTicketFlow(pi, feature, ctx);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(`next-ticket error: ${message}`, "error");
+        emitInfo(pi, `Error in /next-ticket: ${message}`);
+      }
     },
   });
 
+  // ── /ticket-done ───────────────────────────────────────────────────────────
   pi.registerCommand("ticket-done", {
     description: "Mark the current in-progress ticket as done",
     getArgumentCompletions: createFeatureCompletions,
-    handler: async (args, ctx) => {
+    handler: async (args, ctx: CommandContext) => {
       const config = await loadConfig(ctx.cwd);
       const specsRoot = resolveSpecsRoot(ctx.cwd, config);
       const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
@@ -304,10 +434,11 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     },
   });
 
+  // ── /ticket-blocked ────────────────────────────────────────────────────────
   pi.registerCommand("ticket-blocked", {
     description: "Mark the current in-progress ticket as blocked",
     getArgumentCompletions: createFeatureCompletions,
-    handler: async (args, ctx) => {
+    handler: async (args, ctx: CommandContext) => {
       const config = await loadConfig(ctx.cwd);
       const specsRoot = resolveSpecsRoot(ctx.cwd, config);
       const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
@@ -320,7 +451,10 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         return;
       }
 
-      const reason = await ctx.ui.input(`Why is ${current.id} blocked?`, "dependency, bug, missing info...");
+      const reason = await ctx.ui.input(
+        `Why is ${current.id} blocked?`,
+        "dependency, bug, missing info...",
+      );
       resolveTicketStatus(registry, current.id, "blocked", reason || "Blocked by user");
       await saveRegistry(specsRoot, feature, registry);
       emitInfo(pi, `Marked ${current.id} as blocked.`);
@@ -339,10 +473,11 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     },
   });
 
+  // ── /ticket-needs-fix ──────────────────────────────────────────────────────
   pi.registerCommand("ticket-needs-fix", {
     description: "Mark the current in-progress ticket as needs-fix and optionally retry",
     getArgumentCompletions: createFeatureCompletions,
-    handler: async (args, ctx) => {
+    handler: async (args, ctx: CommandContext) => {
       const config = await loadConfig(ctx.cwd);
       const specsRoot = resolveSpecsRoot(ctx.cwd, config);
       const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
@@ -355,7 +490,10 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         return;
       }
 
-      const note = await ctx.ui.input(`What still needs fixing in ${current.id}?`, "tests failing, edge cases...");
+      const note = await ctx.ui.input(
+        `What still needs fixing in ${current.id}?`,
+        "tests failing, edge cases...",
+      );
       resolveTicketStatus(registry, current.id, "needs_fix", note || "Needs more work");
       await saveRegistry(specsRoot, feature, registry);
       emitInfo(pi, `Marked ${current.id} as needs-fix.`);
@@ -368,7 +506,14 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       if (nextChoice === "Retry now") {
         startTicketRun(registry, current.id, "retry");
         await saveRegistry(specsRoot, feature, registry);
-        await launchTicketExecution(pi, feature, current.id, ctx.cwd, specsRoot, "retry", current.profileName, registry.profileName);
+        await launchTicketExecution(
+          pi,
+          feature,
+          current.id,
+          ctx.cwd,
+          specsRoot,
+          "retry",
+        );
       } else if (nextChoice === "Show feature status") {
         const refreshed = await loadRegistry(specsRoot, feature);
         emitInfo(pi, renderStatus(refreshed));
@@ -376,10 +521,11 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     },
   });
 
+  // ── /ticket-status ─────────────────────────────────────────────────────────
   pi.registerCommand("ticket-status", {
     description: "Show feature ticket progress from the registry",
     getArgumentCompletions: createFeatureCompletions,
-    handler: async (args, ctx) => {
+    handler: async (args, ctx: CommandContext) => {
       const config = await loadConfig(ctx.cwd);
       const specsRoot = resolveSpecsRoot(ctx.cwd, config);
       const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
@@ -390,10 +536,52 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     },
   });
 
+  // ── /feature-cost ──────────────────────────────────────────────────────────
+  pi.registerCommand("feature-cost", {
+    description: "Show feature cost breakdown by ticket and phase",
+    getArgumentCompletions: createFeatureCompletions,
+    handler: async (args, ctx: CommandContext) => {
+      const config = await loadConfig(ctx.cwd);
+      const specsRoot = resolveSpecsRoot(ctx.cwd, config);
+      const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
+      if (!feature) return;
+
+      const cost = await readFeatureCost(specsRoot, feature);
+      if (!cost || cost.entries.length === 0) {
+        emitInfo(pi, `No cost data for **${feature}** yet. Costs are recorded when tickets finish executing.`);
+        return;
+      }
+
+      const perTicket = new Map<string, { total: number; runs: number }>();
+      for (const e of cost.entries) {
+        const key = e.ticketId;
+        const existing = perTicket.get(key) ?? { total: 0, runs: 0 };
+        existing.total += e.costUsd;
+        existing.runs += 1;
+        perTicket.set(key, existing);
+      }
+
+      const lines = [
+        `**Cost for ${feature}**: $${cost.totalCostUsd.toFixed(4)}`,
+        "",
+        "| Ticket | Runs | Cost |",
+        "|--------|------|------|",
+        ...Array.from(perTicket.entries())
+          .sort((a, b) => b[1].total - a[1].total)
+          .map(([id, data]) => `| ${id} | ${data.runs} | $${data.total.toFixed(4)} |`),
+        "",
+        `Total tokens: ${(cost.entries.reduce((s, e) => s + e.inputTokens + e.outputTokens, 0)).toLocaleString()}`,
+      ];
+
+      emitInfo(pi, lines.join("\n"));
+    },
+  });
+
+  // ── /ticket-validate ───────────────────────────────────────────────────────
   pi.registerCommand("ticket-validate", {
     description: "Validate spec files, dependencies, and ticket structure",
     getArgumentCompletions: createFeatureCompletions,
-    handler: async (args, ctx) => {
+    handler: async (args, ctx: CommandContext) => {
       const config = await loadConfig(ctx.cwd);
       const specsRoot = resolveSpecsRoot(ctx.cwd, config);
       const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
@@ -403,96 +591,9 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       emitInfo(pi, renderValidation(validation));
     },
   });
-
-  pi.registerCommand("revise-feature", {
-    description: "Revise planned feature docs from review feedback and reopen review",
-    getArgumentCompletions: createFeatureCompletions,
-    handler: async (args, ctx) => {
-      if (!ctx.isIdle()) {
-        ctx.ui.notify("Agent is busy. Wait until it finishes.", "warning");
-        return;
-      }
-
-      const trimmed = args.trim();
-      const [featureArg, ...feedbackParts] = trimmed ? trimmed.split(/\s+/) : [];
-      const config = await loadConfig(ctx.cwd);
-      const specsRoot = resolveSpecsRoot(ctx.cwd, config);
-      const feature = await resolveFeatureSlug(featureArg || "", specsRoot, "Choose feature", ctx);
-      if (!feature) return;
-
-      let feedback = feedbackParts.join(" ").trim();
-      if (!feedback) {
-        feedback = await ctx.ui.input(
-          `What should change in ${feature}?`,
-          "Describe the review feedback to apply to the docs and tickets...",
-        ) || "";
-      }
-
-      if (!feedback.trim()) {
-        ctx.ui.notify("Feedback is required to revise a feature.", "warning");
-        return;
-      }
-
-      await reviseFeatureFromFeedback(pi, feature, specsRoot, ctx.cwd, feedback.trim());
-    },
-  });
-
-  pi.registerCommand("feature-profile", {
-    description: "Show or set the execution profile for a feature",
-    getArgumentCompletions: async (prefix: string) => {
-      const config = await loadConfig(process.cwd());
-      const profiles = Object.keys(config.profiles || {});
-      const parts = prefix.trim().split(/\s+/);
-      if (parts.length === 1) {
-        return createFeatureCompletions(parts[0]);
-      }
-      const matched = profiles
-        .filter((profile) => profile.startsWith(parts[1]))
-        .map((profile) => ({ value: `${parts[0]} ${profile}`, label: profile }));
-      return matched.length > 0 ? matched : null;
-    },
-    handler: async (args, ctx) => {
-      const config = await loadConfig(ctx.cwd);
-      const specsRoot = resolveSpecsRoot(ctx.cwd, config);
-      const parts = args.trim().split(/\s+/);
-      const featureArg = parts[0];
-      const profileArg = parts[1];
-
-      const feature = await resolveFeatureSlug(featureArg, specsRoot, "Choose feature", ctx);
-      if (!feature) return;
-
-      const registry = await loadRegistry(specsRoot, feature);
-      const current = registry.profileName || "(none — tickets must declare - Profile:, otherwise default profile is used as fallback)";
-
-      if (!profileArg) {
-        emitInfo(
-          pi,
-          [
-            `Current profile for **${feature}**: ${current}`,
-            "",
-            "Available profiles:",
-            ...Object.keys(config.profiles || { default: {} }).map((profile) => `  - ${profile}`),
-            "",
-            `Usage: /feature-profile ${feature} <profile>`,
-          ].join("\n"),
-        );
-        return;
-      }
-
-      const validProfiles = Object.keys(config.profiles || {});
-      if (!validProfiles.includes(profileArg)) {
-        ctx.ui.notify(`Unknown profile "${profileArg}". Available: ${validProfiles.join(", ")}`, "error");
-        return;
-      }
-
-      registry.profileName = profileArg;
-      await saveRegistry(specsRoot, feature, registry);
-
-      emitInfo(pi, `Profile for **${feature}** set to **${profileArg}**.`);
-      ctx.ui.notify(`Profile for ${feature} updated to ${profileArg}.`, "info");
-    },
-  });
 }
+
+// ─── Internal helpers ─────────────────────────────────────────────────────────
 
 async function runNextTicketFlow(pi: ExtensionAPI, feature: string, ctx: CommandContext) {
   const config = await loadConfig(ctx.cwd);
@@ -500,23 +601,6 @@ async function runNextTicketFlow(pi: ExtensionAPI, feature: string, ctx: Command
   if (!(await validateBeforeExecution(pi, feature, specsRoot, ctx))) return;
 
   const registry = await loadRegistry(specsRoot, feature);
-
-  // Gate: feature must be approved before executing tickets
-  if (!canExecuteFeature(registry)) {
-    const reviewStatus = registry.review?.status ?? "not_reviewed";
-    emitInfo(pi, [
-      `Feature **${feature}** requires approval before ticket execution.`,
-      "",
-      `Review status: ${reviewStatus}`,
-      "",
-      formatReviewSummary(registry),
-      "",
-      `Run \`/review-feature ${feature}\` to review and approve,`,
-      `or \`/approve-feature ${feature}\` for quick approval.`,
-    ].join("\n"));
-    ctx.ui.notify(`Feature ${feature} requires approval before execution. Run /review-feature ${feature}.`, "warning");
-    return;
-  }
   const current = registry.tickets.find((ticket) => ticket.status === "in_progress");
 
   if (current) {
@@ -529,10 +613,11 @@ async function runNextTicketFlow(pi: ExtensionAPI, feature: string, ctx: Command
     ]);
 
     if (!choice || choice === "Cancel") return;
+
     if (choice.startsWith("Resume ")) {
       startTicketRun(registry, current.id, "resume");
       await saveRegistry(specsRoot, feature, registry);
-      await launchTicketExecution(pi, feature, current.id, ctx.cwd, specsRoot, "resume", current.profileName, registry.profileName);
+      await launchTicketExecution(pi, feature, current.id, ctx.cwd, specsRoot, "resume");
       return;
     }
     if (choice.includes("done")) {
@@ -540,12 +625,12 @@ async function runNextTicketFlow(pi: ExtensionAPI, feature: string, ctx: Command
       await saveRegistry(specsRoot, feature, registry);
     }
     if (choice.includes("needs-fix")) {
-      const note = await ctx.ui.input(`What still needs fixing in ${current.id}?`, "tests failing, edge cases...");
+      const note = await ctx.ui.input(`What still needs fixing in ${current.id}?`, "");
       resolveTicketStatus(registry, current.id, "needs_fix", note || "Needs more work");
       await saveRegistry(specsRoot, feature, registry);
     }
     if (choice.includes("blocked")) {
-      const reason = await ctx.ui.input(`Why is ${current.id} blocked?`, "dependency, bug, missing info...");
+      const reason = await ctx.ui.input(`Why is ${current.id} blocked?`, "");
       resolveTicketStatus(registry, current.id, "blocked", reason || "Blocked by user");
       await saveRegistry(specsRoot, feature, registry);
     }
@@ -554,17 +639,26 @@ async function runNextTicketFlow(pi: ExtensionAPI, feature: string, ctx: Command
   await startPreparedNextTicket(pi, feature, ctx.cwd, specsRoot);
 }
 
-async function startPreparedNextTicket(pi: ExtensionAPI, feature: string, cwd: string, specsRoot: string) {
+async function startPreparedNextTicket(
+  pi: ExtensionAPI,
+  feature: string,
+  cwd: string,
+  specsRoot: string,
+) {
   const refreshed = await loadRegistry(specsRoot, feature);
   const next = findNextAvailableTicket(refreshed);
 
   if (!next) {
-    const blockedPending = refreshed.tickets.filter((ticket) =>
-      (ticket.status === "pending" || ticket.status === "needs_fix") && !areDependenciesDone(ticket, refreshed),
+    const blockedPending = refreshed.tickets.filter(
+      (ticket) =>
+        (ticket.status === "pending" || ticket.status === "needs_fix") &&
+        !areDependenciesDone(ticket, refreshed),
     );
     if (blockedPending.length > 0) {
       const lines = blockedPending.slice(0, 10).map((ticket) => {
-        const missing = ticket.dependencies.filter((dependency) => getTicket(refreshed, dependency)?.status !== "done");
+        const missing = ticket.dependencies.filter(
+          (dep) => getTicket(refreshed, dep)?.status !== "done",
+        );
         return `- ${ticket.id} waiting for ${missing.join(", ")}`;
       });
       emitInfo(pi, `No tickets are ready for ${feature}.\n\nBlocked:\n${lines.join("\n")}`);
@@ -579,7 +673,7 @@ async function startPreparedNextTicket(pi: ExtensionAPI, feature: string, cwd: s
   startTicketRun(refreshed, next.id, mode);
   await saveRegistry(specsRoot, feature, refreshed);
   emitInfo(pi, `Starting ${next.id} — ${next.title}`);
-  await launchTicketExecution(pi, feature, next.id, cwd, specsRoot, mode, next.profileName, refreshed.profileName);
+  await launchTicketExecution(pi, feature, next.id, cwd, specsRoot, mode);
 }
 
 async function launchTicketExecution(
@@ -589,90 +683,86 @@ async function launchTicketExecution(
   cwd: string,
   specsRoot: string,
   phase: "start" | "resume" | "retry",
-  ticketProfileName?: string,
-  featureProfileName?: string,
 ) {
-  const featureDir = path.join(specsRoot, feature);
-  const ticketPath = path.join(featureDir, "tickets", `${ticketId}.md`);
-  const masterSpecPath = path.join(featureDir, "01-master-spec.md");
-  const executionPlanPath = path.join(featureDir, "02-execution-plan.md");
   const config = await loadConfig(cwd);
-  const { name: profileName, profile } = resolveProfileForFeature(config, ticketProfileName, featureProfileName);
   const tddEnabled = resolveTddEnabled(config);
 
+  if (tddEnabled) {
+    await launchTesterPhase(pi, feature, ticketId, cwd, specsRoot, config);
+  } else {
+    await launchWorkerChain(pi, feature, ticketId, cwd, specsRoot, phase, config);
+  }
+}
+
+/** Phase 1 (TDD only): run the tester agent to write failing tests. */
+async function launchTesterPhase(
+  pi: ExtensionAPI,
+  feature: string,
+  ticketId: string,
+  cwd: string,
+  specsRoot: string,
+  config?: Awaited<ReturnType<typeof loadConfig>>,
+) {
+  const resolvedConfig = config ?? (await loadConfig(cwd));
+  const featureDir = path.join(specsRoot, feature);
+  const ticketPath = path.join(featureDir, "tickets", `${ticketId}.md`);
+  const notesPath = testerNotesPath(specsRoot, feature, ticketId);
+
   const message = [
-    `Run the bundled agent-driven ticket workflow for feature \"${feature}\" and ticket \"${ticketId}\".`,
-    `Phase: ${phase}`,
-    `Execution profile: ${profileName}`,
-    "Prefer the bundled `feature-execution` skill if it is available.",
-    ...buildSubagentGuidance(profile, "execution"),
-    "Execute only this ticket. Do not rewrite unrelated tickets.",
-    "Read these files first:",
-    `- ${masterSpecPath}`,
-    `- ${executionPlanPath}`,
-    `- ${ticketPath}`,
-    "Execution rules:",
-    "- Implement the smallest vertical slice that satisfies the ticket.",
-    ...(tddEnabled
-      ? [
-          "- TDD is enabled for this project. Prefer red-green-refactor for this ticket.",
-          "- Write or update the relevant failing test(s) first when feasible, then implement the minimum code to make them pass.",
-          "- Prefer the available `tdd-guide` skill if it exists.",
-        ]
-      : []),
-    "- Update code, tests, and docs only as needed for this ticket.",
-    "- If you discover required follow-up work, record it in the ticket or execution plan without expanding scope.",
-    "- Run targeted verification where possible.",
-    "When you finish, clearly say whether the result is APPROVED, BLOCKED, or NEEDS-FIX.",
+    buildTesterPrompt(feature, ticketId, featureDir, ticketPath, notesPath, resolvedConfig),
+    "",
+    "## Subagent guidance",
+    ...buildSubagentGuidance(resolvedConfig, "execution"),
   ].join("\n");
 
-  setPendingExecution({ kind: "ticket-execution", feature, ticketId, phase, cwd, specsRoot });
+  const testerPending = { kind: "ticket-tester" as const, feature, ticketId, cwd, specsRoot };
+  setPendingExecution(testerPending);
+  await persistCheckpoint(testerPending);
   pi.sendUserMessage(message);
 }
 
-async function reviseFeatureFromFeedback(
+/** Phase 2: run worker → reviewer → chief. Reads tester notes when they exist. */
+async function launchWorkerChain(
   pi: ExtensionAPI,
   feature: string,
-  specsRoot: string,
+  ticketId: string,
   cwd: string,
-  feedback: string,
-): Promise<void> {
-  const config = await loadConfig(cwd);
-  const authoringSkills = resolveAuthoringSkills(config);
-  const tddEnabled = resolveTddEnabled(config);
-  const availableProfiles = Object.keys(config.profiles || { default: {} });
+  specsRoot: string,
+  phase: "start" | "resume" | "retry",
+  config?: Awaited<ReturnType<typeof loadConfig>>,
+) {
+  const resolvedConfig = config ?? (await loadConfig(cwd));
+  const featureDir = path.join(specsRoot, feature);
+  const ticketPath = path.join(featureDir, "tickets", `${ticketId}.md`);
 
-  emitInfo(pi, [
-    `Revising feature **${feature}** from review feedback.`,
+  const memPath = featureMemoryPath(specsRoot, feature);
+  const memExists = await fsPromises.access(memPath).then(() => true).catch(() => false);
+
+  const notesPath = testerNotesPath(specsRoot, feature, ticketId);
+  const notesExist = await fsPromises.access(notesPath).then(() => true).catch(() => false);
+
+  const ctxPath = workerContextPath(specsRoot, feature, ticketId);
+  const ctxExists = await fsPromises.access(ctxPath).then(() => true).catch(() => false);
+
+  const message = [
+    buildTicketExecutionPrompt(
+      feature,
+      ticketId,
+      featureDir,
+      ticketPath,
+      memExists ? memPath : undefined,
+      notesExist ? notesPath : undefined,
+      ctxExists && phase === "retry" ? ctxPath : undefined,
+      resolvedConfig,
+      phase,
+    ),
     "",
-    `Feedback: ${feedback}`,
-  ].join("\n"));
+    "## Subagent guidance",
+    ...buildSubagentGuidance(resolvedConfig, "execution"),
+  ].join("\n");
 
-  setPendingExecution({ kind: "feature-revision", feature, cwd, specsRoot, feedback });
-  pi.sendUserMessage(buildFeatureRevisionPrompt(feature, specsRoot, feedback, authoringSkills, tddEnabled, availableProfiles));
-}
-
-async function startFeatureFromDescription(
-  pi: ExtensionAPI,
-  description: string,
-  ctx: FeatureFlowContext,
-): Promise<boolean> {
-  const trimmed = description.trim();
-  if (!trimmed) return false;
-
-  const cwd = ctx.cwd || process.cwd();
-  const config = await loadConfig(cwd);
-  const specsRoot = resolveSpecsRoot(cwd, config);
-  const baseSlug = deriveFeatureSlug(trimmed);
-  const feature = await ensureUniqueFeatureSlug(specsRoot, baseSlug);
-  const created = await scaffoldFeature(specsRoot, feature, false);
-  const authoringSkills = resolveAuthoringSkills(config);
-  const tddEnabled = resolveTddEnabled(config);
-
-  emitInfo(pi, `Initialized ${feature}.\n${created.map((entry) => `- ${entry}`).join("\n")}`);
-  ctx.ui.notify(`Created feature ${feature}. Planning spec and tickets...`, "info");
-
-  setPendingExecution({ kind: "feature-plan", feature, cwd, specsRoot });
-  pi.sendUserMessage(buildFeaturePlanningPrompt(feature, specsRoot, trimmed, config, authoringSkills, tddEnabled));
-  return true;
+  const execPending = { kind: "ticket-execution" as const, feature, ticketId, phase, cwd, specsRoot };
+  setPendingExecution(execPending);
+  await persistCheckpoint(execPending);
+  pi.sendUserMessage(message);
 }

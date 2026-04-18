@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-04-18
+
+### Added
+- **TDD two-phase execution**: tester and worker now run as separate agent phases with different model configurations. The tester writes failing tests, produces `tickets/<id>-tester-notes.md`, and the worker reads those notes before implementing.
+- **Checkpoint persistence**: execution state is saved to `.pending-execution.json` and recovered on `session_start` after a crash or pi restart.
+- **Retry context enrichment**: the Chief writes `tickets/<id>-worker-context.md` at the end of each ticket with files modified, reviewer findings, and continuation notes. On retry, the worker reads this file first to know exactly what to fix.
+- **Cost tracking**: token usage and cost per ticket/phase are recorded. New `/feature-cost <name>` command shows a cost breakdown by ticket. Data stored in `05-cost.json`.
+
+### Changed
+- Removed YAML config support — JSON (`.pi/feature-flow.json`) is now the only config format.
+- Added 120 unit + integration tests (was 33).
+
 ## [0.2.0] - 2026-04-13
 
 ### Added

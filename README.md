@@ -21,8 +21,9 @@ Pi package for turning a feature description into:
 - `/ticket-validate <feature-name>` — validate spec files, dependencies, and ticket structure
 - `/ticket-done <feature-name>` — mark the current in-progress ticket as done
 - `/ticket-blocked <feature-name>` — mark the current in-progress ticket as blocked
-- `/ticket-needs-fix <feature-name>` — mark the current in-progress ticket as needs-fix and retry
+- `/ticket-needs-fix <feature-name> [note]` — mark the current in-progress ticket as needs-fix and retry
 - `/feature-profile <feature-name> [profile]` — show or change the profile used for a feature
+- `/feature-cost <feature-name>` — show cost breakdown by ticket and phase
 
 ## Installation
 
@@ -46,11 +47,14 @@ If `subagent` is unavailable, the package still works and falls back to direct e
     01-master-spec.md
     02-execution-plan.md
     03-ticket-registry.json
-    04-technical-design.md  (optional — for technically complex features)
-    05-review-log.md        (generated on review actions)
+    04-technical-design.md       (optional — for technically complex features)
+    05-cost.json                 (generated — cost tracking per ticket)
+    .pending-execution.json      (internal — checkpoint for crash recovery)
     tickets/
       STK-001.md
       STK-002.md
+      STK-001-tester-notes.md    (when TDD enabled)
+      STK-001-worker-context.md  (written by chief — used on retry)
       ...
 ```
 
@@ -95,39 +99,28 @@ The package will:
 ## Configuration
 
 Config file:
-- `.pi/feature-ticket-flow.yaml`
-
-There is a ready-to-copy example in:
-- `feature-ticket-flow.example.yaml`
+- `.pi/feature-flow.json`
 
 ### Minimal config
 
-```yaml
-specsRoot: ./docs/technical-specs
-defaultProfile: default
+```json
+{
+  "specsRoot": "./docs/technical-specs"
+}
 ```
 
 ### Recommended config
 
-```yaml
-specsRoot: ./docs/technical-specs
-defaultProfile: default
-tdd: false
-
-authoringSkills:
-  productRequirementsSkill: prd-development
-  requirementsRefinementSkill: spec-driven-workflow
-
-profiles:
-  default:
-    preferSubagents: true
-    agents:
-      planner:
-        model: anthropic/claude-sonnet-4
-      worker:
-        model: anthropic/claude-sonnet-4
-      reviewer:
-        model: openai/gpt-5.4
+```json
+{
+  "specsRoot": "./docs/technical-specs",
+  "tdd": false,
+  "agents": {
+    "planner": { "model": "anthropic/claude-sonnet-4" },
+    "worker": { "model": "anthropic/claude-sonnet-4" },
+    "reviewer": { "model": "openai/gpt-5.4" }
+  }
+}
 ```
 
 ### Supported fields
@@ -135,15 +128,41 @@ profiles:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `specsRoot` | `string` | `"./docs/technical-specs"` | Root directory containing feature folders. |
-| `defaultProfile` | `string` | `"default"` | Fallback profile used when a ticket does not declare a profile or when a feature-level fallback is set manually. |
-| `tdd` | `boolean` | `false` | Adds TDD-oriented guidance to planning and execution prompts. The project is responsible for having a usable test setup. |
-| `authoringSkills.productRequirementsSkill` | `string` | `prd-development` | Skill used for product-facing requirements and problem framing. |
-| `authoringSkills.requirementsRefinementSkill` | `string` | `spec-driven-workflow` | Skill used to refine requirements into clearer FR/NFR/acceptance criteria. |
-| `profiles.<name>.matchAny` | `string[]` | `[]` | Optional legacy routing keywords. Ticket-level `- Profile:` is the primary routing mechanism. |
-| `profiles.<name>.preferSubagents` | `boolean` | `true` | If false, disables subagent-first guidance for that profile. |
-| `profiles.<name>.agents.<role>.agent` | `string` | builtin role name | Subagent name to use for planner/worker/reviewer. |
-| `profiles.<name>.agents.<role>.model` | `string` | unset | Preferred model for that role. |
-| `profiles.<name>.agents.<role>.thinking` | `string` | unset | Preferred thinking level for that role. |
+| `tdd` | `boolean` | `false` | Adds TDD-oriented guidance to planning and execution prompts. |
+| `agents.<role>.agent` | `string` | builtin | Subagent name to use for planner/worker/reviewer. |
+| `agents.<role>.model` | `string` | unset | Preferred model for that role. |
+| `agents.<role>.thinking` | `string` | unset | Preferred thinking level for that role. |
+| `agents.<role>.skills` | `string[]` | unset | Skills to enable for that role. |
+
+### TDD two-phase execution
+
+When `tdd: true`, the system runs two **separate agent phases** per ticket:
+
+1. **Tester phase** — a dedicated agent writes failing tests and produces `tickets/<id>-tester-notes.md`.
+2. **Worker/Reviewer/Chief phase** — a separate agent reads those notes, implements the feature, reviews, and records the result.
+
+This lets you use a lighter, faster model for the tester and a more capable (reasoning) model for the worker:
+
+```json
+{
+  "tdd": true,
+  "agents": {
+    "tester": {
+      "model": "anthropic/claude-haiku-4",
+      "thinking": "off"
+    },
+    "worker": {
+      "model": "anthropic/claude-sonnet-4",
+      "thinking": "medium"
+    },
+    "reviewer": {
+      "model": "openai/gpt-4.1"
+    }
+  }
+}
+```
+
+When TDD is disabled, only the Worker/Reviewer/Chief phase runs (no tester agent is spawned).
 
 ## Master spec model
 
@@ -234,6 +253,52 @@ To inspect the current profile and options:
 | `missing-ticket-profile` | error | A ticket is missing a required `- Profile:` line. |
 | `ticket-template-mismatch` | error | A ticket does not follow the required ticket markdown template. |
 | `execution-plan-template-mismatch` | error | `02-execution-plan.md` does not follow the required execution plan template. |
+
+## Agent coordination
+
+### TDD two-phase execution
+
+When `tdd: true`, each ticket runs through **two separate agent phases**:
+
+```
+/next-ticket
+  │
+  ├─ Phase 1: Tester agent
+  │   - Writes failing tests
+  │   - Produces tickets/<id>-tester-notes.md
+  │   - Outcome: APPROVED | BLOCKED | NEEDS-FIX
+  │
+  └─ if APPROVED → Phase 2: Worker/Reviewer/Chief
+      - Worker reads tester notes, implements feature
+      - Reviewer verifies against ticket criteria
+      - Chief writes worker context + feature memory
+```
+
+This lets you assign different models per role: a fast model for the tester, a reasoning model for the worker.
+
+### Checkpoint persistence
+
+Execution state is persisted to `.pending-execution.json` per feature. If pi restarts mid-execution, the extension detects the checkpoint on `session_start` and prompts you to resume.
+
+### Retry context
+
+When a ticket returns to `needs_fix`, the Chief writes `tickets/<id>-worker-context.md` containing:
+- Which files were modified (and their status)
+- What the reviewer found
+- Continuation notes for the next attempt
+
+On retry, the worker reads this file first — it knows exactly what to fix instead of starting from scratch.
+
+### Cost tracking
+
+Every agent phase records token usage and cost. Run `/feature-cost <name>` to see:
+
+| Ticket | Runs | Cost |
+|--------|------|------|
+| STK-001 | 2 | $0.0050 |
+| STK-002 | 1 | $0.0032 |
+
+Costs are stored in `05-cost.json` and track both tester and worker phases separately.
 
 ## Publish
 

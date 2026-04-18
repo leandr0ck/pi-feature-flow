@@ -1,10 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { TicketRecord, TicketRegistry, TicketRunMode } from "./types.js";
-import {
-  DEFAULT_TICKETS_DIR_NAME,
-  DEFAULT_REGISTRY_FILE,
-} from "./config.js";
+import type { TicketCostEntry, TicketRecord, TicketRegistry, TicketRunMode, FeatureCost } from "./types.js";
+import { DEFAULT_TICKETS_DIR_NAME, DEFAULT_REGISTRY_FILE, DEFAULT_FEATURE_MEMORY_FILE } from "./config.js";
 
 // ─── Path helpers ─────────────────────────────────────────────────────────────
 
@@ -12,12 +9,28 @@ function featureRoot(specsRoot: string, feature: string) {
   return path.join(specsRoot, feature);
 }
 
-function ticketsDirPath(specsRoot: string, feature: string) {
+export function ticketsDirPath(specsRoot: string, feature: string) {
   return path.join(featureRoot(specsRoot, feature), DEFAULT_TICKETS_DIR_NAME);
 }
 
-function registryFilePath(specsRoot: string, feature: string) {
+export function registryFilePath(specsRoot: string, feature: string) {
   return path.join(featureRoot(specsRoot, feature), DEFAULT_REGISTRY_FILE);
+}
+
+export function featureMemoryPath(specsRoot: string, feature: string) {
+  return path.join(featureRoot(specsRoot, feature), DEFAULT_FEATURE_MEMORY_FILE);
+}
+
+export function testerNotesPath(specsRoot: string, feature: string, ticketId: string) {
+  return path.join(featureRoot(specsRoot, feature), DEFAULT_TICKETS_DIR_NAME, `${ticketId}-tester-notes.md`);
+}
+
+export function workerContextPath(specsRoot: string, feature: string, ticketId: string) {
+  return path.join(featureRoot(specsRoot, feature), DEFAULT_TICKETS_DIR_NAME, `${ticketId}-worker-context.md`);
+}
+
+export function featureCostPath(specsRoot: string, feature: string) {
+  return path.join(featureRoot(specsRoot, feature), "05-cost.json");
 }
 
 // ─── Feature discovery ─────────────────────────────────────────────────────────
@@ -47,7 +60,9 @@ export async function loadRegistry(specsRoot: string, feature: string): Promise<
 
   let existing: TicketRegistry | undefined;
   try {
-    existing = JSON.parse(await fs.readFile(registryFilePath(specsRoot, feature), "utf8")) as TicketRegistry;
+    existing = JSON.parse(
+      await fs.readFile(registryFilePath(specsRoot, feature), "utf8"),
+    ) as TicketRegistry;
   } catch {
     existing = undefined;
   }
@@ -62,6 +77,16 @@ export async function saveRegistry(specsRoot: string, feature: string, registry:
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   registry.updatedAt = new Date().toISOString();
   await fs.writeFile(filePath, JSON.stringify(registry, null, 2) + "\n", "utf8");
+}
+
+// ─── Feature memory ────────────────────────────────────────────────────────────
+
+export async function readFeatureMemory(specsRoot: string, feature: string): Promise<string | undefined> {
+  try {
+    return await fs.readFile(featureMemoryPath(specsRoot, feature), "utf8");
+  } catch {
+    return undefined;
+  }
 }
 
 // ─── Ticket discovery ──────────────────────────────────────────────────────────
@@ -81,7 +106,6 @@ async function discoverTickets(ticketsDir: string): Promise<TicketRecord[]> {
         title: parseTitle(content, id),
         path: absolutePath,
         dependencies: parseDependencies(content),
-        profileName: parseProfileName(content),
         status: "pending" as const,
         updatedAt: new Date().toISOString(),
         runs: [],
@@ -102,7 +126,6 @@ function parseTitle(content: string, fallbackId: string): string {
 
 // Convention: `- Requires: TKT-001, TKT-002` or `- Requires: none`
 const REQUIRES_LABEL = "Requires";
-const PROFILE_LABEL = "Profile";
 const DEPENDENCY_SPLIT_PATTERN = ",";
 
 function parseDependencies(content: string): string[] {
@@ -116,30 +139,26 @@ function parseDependencies(content: string): string[] {
   return value.split(splitter).map((part) => part.trim()).filter(Boolean);
 }
 
-function parseProfileName(content: string): string | undefined {
-  const match = content.match(new RegExp(`^-\\s*${PROFILE_LABEL}:\\s*(.+)$`, "m"));
-  const value = match?.[1]?.trim();
-  return value || undefined;
-}
-
 // ─── Registry merge ───────────────────────────────────────────────────────────
 
-function mergeRegistry(feature: string, discoveredTickets: TicketRecord[], existing?: TicketRegistry): TicketRegistry {
-  const existingEntries: Array<[string, TicketRecord]> = existing?.tickets.map((ticket: TicketRecord) => [ticket.id, ticket]) || [];
-  const existingMap = new Map<string, TicketRecord>(existingEntries);
+function mergeRegistry(
+  feature: string,
+  discoveredTickets: TicketRecord[],
+  existing?: TicketRegistry,
+): TicketRegistry {
+  const existingMap = new Map<string, TicketRecord>(
+    (existing?.tickets ?? []).map((ticket: TicketRecord) => [ticket.id, ticket]),
+  );
   const now = new Date().toISOString();
 
   return {
     feature,
     version: 1,
     updatedAt: now,
-    profileName: existing?.profileName,
-    review: existing?.review,
     tickets: discoveredTickets.map((ticket) => {
       const previous = existingMap.get(ticket.id);
       return {
         ...ticket,
-        profileName: ticket.profileName || previous?.profileName,
         status: previous?.status || "pending",
         blockedReason: previous?.blockedReason,
         startedAt: previous?.startedAt,
@@ -215,17 +234,66 @@ function closeOpenRun(ticket: TicketRecord, finishedAt: string, outcome?: string
 
 export function findNextAvailableTicket(registry: TicketRegistry): TicketRecord | undefined {
   return (
-    registry.tickets.find((ticket) => ticket.status === "needs_fix" && areDependenciesDone(ticket, registry)) ||
-    registry.tickets.find((ticket) => ticket.status === "pending" && areDependenciesDone(ticket, registry))
+    registry.tickets.find(
+      (ticket) => ticket.status === "needs_fix" && areDependenciesDone(ticket, registry),
+    ) ||
+    registry.tickets.find(
+      (ticket) => ticket.status === "pending" && areDependenciesDone(ticket, registry),
+    )
   );
 }
 
 export function areDependenciesDone(ticket: TicketRecord, registry: TicketRegistry): boolean {
-  return ticket.dependencies.every((dependency) => getTicket(registry, dependency)?.status === "done");
+  return ticket.dependencies.every(
+    (dependency) => getTicket(registry, dependency)?.status === "done",
+  );
 }
 
 export function getTicket(registry: TicketRegistry, ticketId: string): TicketRecord | undefined {
   return registry.tickets.find((ticket: TicketRecord) => ticket.id === ticketId);
+}
+
+// ─── Cost tracking ──────────────────────────────────────────────────────────
+
+export async function readFeatureCost(specsRoot: string, feature: string): Promise<FeatureCost | null> {
+  try {
+    const raw = await fs.readFile(featureCostPath(specsRoot, feature), "utf8");
+    return JSON.parse(raw) as FeatureCost;
+  } catch {
+    return null;
+  }
+}
+
+export async function recordTicketCost(
+  specsRoot: string,
+  feature: string,
+  ticketId: string,
+  phase: "tester" | "worker",
+  runIndex: number,
+  entry: Omit<TicketCostEntry, "ticketId" | "phase" | "runIndex">,
+): Promise<void> {
+  let cost: FeatureCost = await readFeatureCost(specsRoot, feature) ?? {
+    feature,
+    totalCostUsd: 0,
+    entries: [],
+    updatedAt: new Date().toISOString(),
+  };
+
+  const newEntry: TicketCostEntry = { ...entry, ticketId, phase, runIndex };
+  // Update existing entry if same ticket/phase/runIndex already recorded
+  const existingIdx = cost.entries.findIndex(
+    (e) => e.ticketId === ticketId && e.phase === phase && e.runIndex === runIndex,
+  );
+  if (existingIdx >= 0) {
+    cost.totalCostUsd -= cost.entries[existingIdx]!.costUsd;
+    cost.entries[existingIdx] = newEntry;
+  } else {
+    cost.entries.push(newEntry);
+  }
+  cost.totalCostUsd = cost.entries.reduce((sum, e) => sum + e.costUsd, 0);
+  cost.updatedAt = new Date().toISOString();
+
+  await fs.writeFile(featureCostPath(specsRoot, feature), JSON.stringify(cost, null, 2) + "\n", "utf8");
 }
 
 // ─── Types (local alias to avoid circular import) ─────────────────────────────

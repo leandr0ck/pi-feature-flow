@@ -1,224 +1,264 @@
 import path from "node:path";
-import {
-  loadConfig,
-  renderAgentPreferences,
-  resolveExecutionProfile,
-  resolveExecutionProfileByName,
-} from "../config.js";
+import { loadConfig, renderAgentRoles } from "../config.js";
 import { buildExecutionPlanTemplateInstructions } from "../execution-plan-template.js";
 import { buildTicketTemplateInstructions } from "../ticket-template.js";
-import type { FeatureExecutionProfile } from "../types.js";
+import type { FeatureFlowConfig } from "../types.js";
 
+// ─── Planning prompt ──────────────────────────────────────────────────────────
+
+/**
+ * Builds the planning prompt for the planner agent.
+ * Reads from an existing spec document and produces execution plan + tickets.
+ */
 export function buildFeaturePlanningPrompt(
   feature: string,
   specsRoot: string,
-  description: string,
-  config: Awaited<ReturnType<typeof loadConfig>>,
-  authoringSkills: {
-    productRequirementsSkill: string;
-    requirementsRefinementSkill: string;
-  },
+  specPath: string,
+  config: FeatureFlowConfig,
   tddEnabled: boolean,
 ): string {
   const featureDir = path.join(specsRoot, feature);
-  const availableProfiles = Object.keys(config.profiles || { default: {} });
+
   return [
-    `Run the bundled agent-driven feature intake workflow for feature "${feature}".`,
+    `Run the bundled \`feature-planning\` skill for feature "${feature}".`,
+    "",
+    "## Inputs",
     `Feature directory: ${featureDir}`,
-    "User request:",
-    description,
+    `Spec document to read: ${specPath}`,
     "",
-    "Primary goal:",
-    "- Turn the user's description into a complete feature package with a master spec, execution plan, and implementation tickets.",
-    "",
-    "Required outputs:",
-    `- ${path.join(featureDir, "01-master-spec.md")}`,
+    "## Goal",
+    "Read the spec document and produce a complete feature package:",
     `- ${path.join(featureDir, "02-execution-plan.md")}`,
     `- ticket files under ${path.join(featureDir, "tickets")}`,
     "",
-    "Workflow guidance:",
-    "- Prefer the bundled `feature-planning` and `feature-execution` skills if they are available.",
-    `- Authoring skill defaults (override per project via authoringSkills in config):`,
-    `  - productRequirementsSkill: "${authoringSkills.productRequirementsSkill}"`,
-    `  - requirementsRefinementSkill: "${authoringSkills.requirementsRefinementSkill}"`,
+    "Do NOT rewrite or move the spec document.",
+    "Do NOT add a product review step or ask the user to approve in a browser.",
     "",
-    `- TDD enabled: ${tddEnabled ? "true" : "false"}`,
-    "",
-    "Skill routing by feature complexity:",
-    "- Simple feature → use productRequirementsSkill.",
-    "- Medium feature → use productRequirementsSkill + requirementsRefinementSkill.",
-    "- Technically complex feature → first write the PRD/master spec, then STOP and ask the user to add `04-technical-design.md` before refinement and ticket generation.",
-    "",
-    "Treat `01-master-spec.md` as the principal document: PRD Lite for simple work, PRD-first master spec for medium/complex work.",
-    "",
-    "Planning rules:",
-    "- Classify the request as simple, medium, or technically complex before writing specs.",
-    "- Write a concise but actionable master spec.",
-    "- Keep the master spec product-readable first.",
-    "- If the feature is technically complex enough to need architecture, contracts, migration, concurrency, or rollout design before refinement, do not invent that detail yourself.",
-    "- In that case, update `01-master-spec.md` with the product framing, explain exactly why more technical detail is required, ask the user to add `04-technical-design.md`, and end BLOCKED.",
-    "- The user may create `04-technical-design.md` however they want: manually, with another skill, or from external/internal documentation.",
-    "- Only write `02-execution-plan.md` and generate tickets when the feature is ready for refinement.",
-    "- Write an execution plan with clear sequencing and risks when refinement can proceed.",
-    ...(tddEnabled
-      ? [
-          "- Because TDD is enabled, include test expectations in the execution plan and tickets where relevant.",
-          "- Prefer tickets that keep the red-green-refactor loop small and local to each slice.",
-        ]
-      : []),
+    "## Planner rules",
+    "- Read the spec carefully before writing anything.",
+    "- Write an execution plan with clear sequencing, approach, and validation strategy.",
     "- Create small, dependency-aware tickets as thin vertical slices.",
     "- Every ticket must include a `- Requires:` line.",
-    "- Every ticket must include a `- Profile:` line with exactly one execution profile name.",
-    `- Allowed ticket profiles: ${availableProfiles.join(", ")}`,
     "- Use STK-001, STK-002, ... ticket ids.",
-    "- Keep all generated files inside the feature directory only.",
-    "",
-    buildExecutionPlanTemplateInstructions(),
-    "",
-    buildTicketTemplateInstructions(availableProfiles),
-    "",
-    "Do not implement application code yet unless the planning workflow truly requires a tiny probe. Focus on producing the feature package.",
-    "When you finish, clearly say whether the result is APPROVED, BLOCKED, or NEEDS-FIX.",
-  ].join("\n");
-}
-
-export function buildPlanningContinuationPrompt(
-  feature: string,
-  specsRoot: string,
-  authoringSkills: {
-    productRequirementsSkill: string;
-    requirementsRefinementSkill: string;
-  },
-  tddEnabled: boolean,
-  availableProfiles: string[],
-): string {
-  const featureDir = path.join(specsRoot, feature);
-  return [
-    `Continue planning for feature "${feature}" now that additional technical detail is available.`,
-    `Feature directory: ${featureDir}`,
-    "Read these files first:",
-    `- ${path.join(featureDir, "01-master-spec.md")}`,
-    `- ${path.join(featureDir, "04-technical-design.md")}`,
-    `- ${path.join(featureDir, "02-execution-plan.md")}`,
-    "",
-    "Goal:",
-    "- Use the technical design document to complete refinement, write the execution plan, and generate dependency-aware tickets.",
-    "",
-    "Authoring skill defaults:",
-    `- productRequirementsSkill: "${authoringSkills.productRequirementsSkill}"`,
-    `- requirementsRefinementSkill: "${authoringSkills.requirementsRefinementSkill}"`,
-    `- TDD enabled: ${tddEnabled ? "true" : "false"}`,
-    "",
-    "Rules:",
-    "- Treat `01-master-spec.md` as the principal product-facing document.",
-    "- Use `04-technical-design.md` as supporting technical context, not as a replacement for the master spec.",
-    "- Update `02-execution-plan.md` with sequencing, risks, and validation strategy.",
+    "- Keep all generated files inside the feature directory.",
     ...(tddEnabled
       ? [
-          "- Because TDD is enabled, include test expectations in the execution plan and tickets where relevant.",
-          "- Prefer tickets that keep the red-green-refactor loop small and local to each slice.",
-        ]
-      : []),
-    "- Create small, dependency-aware tickets as thin vertical slices.",
-    "- Every ticket must include a `- Profile:` line with exactly one execution profile name.",
-    "- Every ticket must include a `- Requires:` line.",
-    "- Use STK-001, STK-002, ... ticket ids.",
-    "- Keep all generated files inside the feature directory only.",
-    "",
-    buildExecutionPlanTemplateInstructions(),
-    "",
-    buildTicketTemplateInstructions(availableProfiles),
-    "",
-    "When you finish, clearly say whether the result is APPROVED, BLOCKED, or NEEDS-FIX.",
-  ].join("\n");
-}
-
-export function buildFeatureRevisionPrompt(
-  feature: string,
-  specsRoot: string,
-  feedback: string,
-  authoringSkills: {
-    productRequirementsSkill: string;
-    requirementsRefinementSkill: string;
-  },
-  tddEnabled: boolean,
-  availableProfiles: string[],
-): string {
-  const featureDir = path.join(specsRoot, feature);
-  return [
-    `Revise the planned feature package for feature "${feature}" based on review feedback.`,
-    `Feature directory: ${featureDir}`,
-    "Read these files first:",
-    `- ${path.join(featureDir, "01-master-spec.md")}`,
-    `- ${path.join(featureDir, "02-execution-plan.md")}`,
-    `- tickets under ${path.join(featureDir, "tickets")}`,
-    `- ${path.join(featureDir, "05-review-log.md")}`,
-    "",
-    "Review feedback to address:",
-    feedback,
-    "",
-    "Goal:",
-    "- Update the existing docs and tickets to address the feedback with the smallest coherent set of changes.",
-    "- Keep what is already good; do not rewrite the whole package unless necessary.",
-    "- Preserve ticket ids where possible so review iterations stay stable.",
-    "",
-    "Authoring skill defaults:",
-    `- productRequirementsSkill: \"${authoringSkills.productRequirementsSkill}\"`,
-    `- requirementsRefinementSkill: \"${authoringSkills.requirementsRefinementSkill}\"`,
-    `- TDD enabled: ${tddEnabled ? "true" : "false"}`,
-    "",
-    "Rules:",
-    "- Update only files inside the feature directory.",
-    "- Keep `01-master-spec.md` as the principal product-facing document.",
-    "- Keep `02-execution-plan.md` aligned with the revised scope and sequencing.",
-    "- Keep tickets as thin vertical slices and preserve dependency logic.",
-    "- Every ticket must include a `- Profile:` line with exactly one execution profile name.",
-    `- Allowed ticket profiles: ${availableProfiles.join(", ")}`,
-    "- Every ticket must include a `- Requires:` line.",
-    ...(tddEnabled
-      ? [
-          "- Because TDD is enabled, keep test expectations explicit in the plan and ticket acceptance criteria.",
+          "- TDD is enabled. Include test expectations in the execution plan and tickets.",
+          "- Prefer tickets that keep the red-green-refactor loop small and local.",
         ]
       : []),
     "",
     buildExecutionPlanTemplateInstructions(),
     "",
-    buildTicketTemplateInstructions(availableProfiles),
+    buildTicketTemplateInstructions([]),
+    "",
+    "## Agent configuration",
+    ...renderAgentRoles(config),
     "",
     "When you finish, clearly say whether the result is APPROVED, BLOCKED, or NEEDS-FIX.",
   ].join("\n");
 }
 
-export function resolveProfileForFeature(
-  config: Awaited<ReturnType<typeof loadConfig>>,
-  ticketProfileName?: string,
-  featureProfileName?: string,
-): ReturnType<typeof resolveExecutionProfile> {
-  if (ticketProfileName && config.profiles?.[ticketProfileName]) {
-    return resolveExecutionProfileByName(config, ticketProfileName);
-  }
-  if (featureProfileName && config.profiles?.[featureProfileName]) {
-    return resolveExecutionProfileByName(config, featureProfileName);
-  }
-  return resolveExecutionProfileByName(config, config.defaultProfile || "default");
-}
+// ─── Tester prompt (TDD — separate agent, red phase only) ───────────────────
 
-export function buildSubagentGuidance(
-  profile: FeatureExecutionProfile,
-  phase: "planning" | "execution",
-): string[] {
-  const preferences = renderAgentPreferences(profile);
-  if (profile.preferSubagents === false) {
-    return [
-      "- This profile disables subagent delegation. Work directly with read/write/edit/bash.",
-      ...(preferences.length > 0 ? ["- Preferred agent settings for equivalent direct execution:", ...preferences] : []),
-    ];
-  }
+/**
+ * Prompt for the tester agent. Runs independently before the worker.
+ * Goal: write failing tests, confirm red state, leave tester notes for the worker.
+ */
+export function buildTesterPrompt(
+  feature: string,
+  ticketId: string,
+  featureDir: string,
+  ticketPath: string,
+  testerNotesPath: string,
+  config: FeatureFlowConfig,
+): string {
+  const masterSpecPath = path.join(featureDir, "01-master-spec.md");
+  const executionPlanPath = path.join(featureDir, "02-execution-plan.md");
+  const testerConfig = config.agents?.tester ?? {};
 
   return [
+    `Run the bundled \`feature-execution\` skill — **Tester phase** for feature "${feature}" ticket "${ticketId}".`,
+    "",
+    "## Files to read first",
+    `- Spec: ${masterSpecPath}`,
+    `- Execution plan: ${executionPlanPath}`,
+    `- Ticket: ${ticketPath}`,
+    "",
+    "## Your role: Tester (TDD red phase)",
+    "- Use the `tdd` skill if available.",
+    "- Read the ticket acceptance criteria carefully.",
+    "- Write the smallest set of failing tests that prove the ticket goal.",
+    "- Do NOT implement the feature — write tests only.",
+    "- Confirm the tests are in the red state (failing for the right reason).",
+    "",
+    `## Output: write tester notes to ${testerNotesPath}`,
+    "Use this exact format:",
+    "```md",
+    `# Tester Notes — ${ticketId}`,
+    "",
+    "## Tests written",
+    "- <file path>: <what it tests>",
+    "",
+    "## Red state confirmed",
+    "- <how you verified the tests are failing>",
+    "",
+    "## Notes for worker",
+    "- <anything the worker should know before implementing>",
+    "```",
+    "",
+    "## Agent configuration",
+    ...(testerConfig.model ? [`model: ${testerConfig.model}`] : []),
+    ...(testerConfig.thinking ? [`thinking: ${testerConfig.thinking}`] : []),
+    ...(testerConfig.skills?.length ? [`skills: ${testerConfig.skills.join(", ")}`] : []),
+    "",
+    "When you finish, clearly say APPROVED (tests written and red), BLOCKED, or NEEDS-FIX.",
+    "Include a one-line summary.",
+  ].join("\n");
+}
+
+// ─── Ticket execution prompt ──────────────────────────────────────────────────
+
+/**
+ * Builds the full ticket execution prompt including all agent roles:
+ * tester (if TDD) → worker → reviewer → chief
+ */
+export function buildTicketExecutionPrompt(
+  feature: string,
+  ticketId: string,
+  featureDir: string,
+  ticketPath: string,
+  memoryPath: string | undefined,
+  testerNotesPath: string | undefined,
+  workerContextPath: string | undefined,
+  config: FeatureFlowConfig,
+  phase: "start" | "resume" | "retry",
+): string {
+  const masterSpecPath = path.join(featureDir, "01-master-spec.md");
+  const executionPlanPath = path.join(featureDir, "02-execution-plan.md");
+
+  const lines: string[] = [
+    `Run the bundled \`feature-execution\` skill — **Worker/Reviewer/Chief phase** for feature "${feature}" ticket "${ticketId}".`,
+    `Phase: ${phase}`,
+    "",
+    "## Files to read first",
+    `- Spec: ${masterSpecPath}`,
+    `- Execution plan: ${executionPlanPath}`,
+    `- Ticket: ${ticketPath}`,
+  ];
+
+  if (testerNotesPath) {
+    lines.push(`- Tester notes: ${testerNotesPath}  (failing tests written by the tester — read before implementing)`);
+  }
+
+  if (memoryPath) {
+    lines.push(`- Feature memory: ${memoryPath}  (accumulated context from previous tickets)`);
+  }
+
+  if (phase === "retry" && workerContextPath) {
+    lines.push(`- Worker context: ${workerContextPath}  (⚠️ RETRY — read this first: what was done, what failed, continuation notes)`);
+  }
+
+  lines.push(
+    "",
+    "## Execution rules",
+    "- Implement ONLY the assigned ticket. Do not pull future tickets into scope.",
+    "- Prefer minimal, testable changes.",
+    "- If you discover follow-up work, record it in the ticket or execution plan rather than silently expanding scope.",
+    "- If you cannot complete the ticket due to a real blocker, stop and explain clearly.",
+  );
+
+  if (testerNotesPath) {
+    lines.push(
+      "",
+      "## Worker (TDD — green phase)",
+      "- The tester has already written failing tests. Read the tester notes before writing any code.",
+      "- Implement the smallest slice that makes those tests pass (green phase).",
+      "- Clean up and refactor if safe (refactor phase).",
+    );
+  } else {
+    lines.push(
+      "",
+      "## Worker",
+      "- Implement the smallest slice that satisfies the ticket goal.",
+      "- Run targeted verification where possible.",
+    );
+  }
+
+  lines.push(
+    "",
+    "## Reviewer",
+    "- Use the `code-reviewer` skill if available.",
+    "- Review the diff against the ticket acceptance criteria.",
+    "- Verify tests pass.",
+    "- Flag any concerns before the chief updates state.",
+  );
+
+  lines.push(
+    "",
+    "## Chief — update state and memory",
+    "After the reviewer finishes:",
+    `1. Append a dated learnings entry to ${memoryPath || path.join(featureDir, "04-feature-memory.md")}`,
+    "   - Technical decisions made in this ticket",
+    "   - Patterns discovered (useful utilities, conventions, traps to avoid)",
+    "   - Any context that will help the next ticket start faster",
+    "   - If the file doesn't exist yet, create it with a short header first.",
+    `2. Write a worker context file to ${workerContextPath || path.join(featureDir, "tickets", `${ticketId}-worker-context.md`)}`,
+    "   Use this exact format:",
+    "   ```md",
+    `   # Worker Context — ${ticketId}`,
+    "",
+    "   ## Status",
+    "   <APPROVED | NEEDS-FIX | BLOCKED>",
+    "",
+    "   ## Files modified",
+    "   - <path>: <what was done> [complete | partial | failed]",
+    "",
+    "   ## Reviewer findings",
+    "   - <issue or 'none'>",
+    "",
+    "   ## Continuation notes",
+    "   - <what the next attempt must know: what not to redo, what to fix, where it failed>",
+    "   ```",
+    "   This file is read on retry — keep it concise and actionable.",
+    "3. The ticket registry is updated automatically — do not modify it directly.",
+    "",
+    "## Agent configuration",
+    ...renderAgentRoles(config),
+    "",
+    "When you finish, clearly say whether the result is APPROVED, BLOCKED, or NEEDS-FIX.",
+    "Include a one-line summary of what was done.",
+  );
+
+  return lines.join("\n");
+}
+
+// ─── Subagent guidance ────────────────────────────────────────────────────────
+
+export function buildSubagentGuidance(config: FeatureFlowConfig, phase: "planning" | "execution"): string[] {
+  const agentPrefs = renderAgentRoles(config);
+
+  const lines = [
     "- If the `subagent` tool is available in Pi, prefer subagent delegation.",
-    `- Preferred ${phase} chain order: planner -> worker -> reviewer.`,
-    ...(preferences.length > 0 ? ["- Use these configured agent/model preferences when delegating:", ...preferences] : []),
+    phase === "planning"
+      ? "- Delegation order: planner (creates plan + tickets)."
+      : "- Delegation order: tester → worker → reviewer → chief.",
+    ...(agentPrefs.length > 0
+      ? ["- Use these configured role preferences when delegating:", ...agentPrefs]
+      : []),
     "- If subagents are unavailable, do the work directly with read/write/edit/bash.",
   ];
+
+  return lines;
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+export function resolveSpecFileInFeatureDir(featureDir: string): string {
+  // Convention: spec file is 01-master-spec.md
+  return path.join(featureDir, "01-master-spec.md");
+}
+
+export async function loadConfigForCwd(cwd: string) {
+  return loadConfig(cwd);
 }

@@ -1,22 +1,3 @@
-// ─── Review ────────────────────────────────────────────────────────────────────
-
-export type FeatureReviewStatus = "pending_review" | "approved" | "changes_requested";
-
-export type FeatureReviewAction = "approve" | "request_changes" | "close";
-
-export type FeatureReviewRecord = {
-  status: FeatureReviewStatus;
-  requestedAt: string;
-  reviewedAt?: string;
-  comments: string[];
-  lastAction?: FeatureReviewAction;
-};
-
-export type FeatureReviewResult =
-  | { action: "approved"; comment?: string }
-  | { action: "changes_requested"; comment: string }
-  | { action: "closed" };
-
 // ─── Ticket lifecycle ─────────────────────────────────────────────────────────
 
 export type TicketStatus = "pending" | "in_progress" | "needs_fix" | "done" | "blocked";
@@ -31,6 +12,14 @@ export type TicketRun = {
   mode: TicketRunMode;
   outcome?: TicketRunOutcome;
   note?: string;
+  /** Tokens and cost consumed by this run (populated from agent message usage). */
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    costUsd: number;
+  };
 };
 
 export type TicketRecord = {
@@ -38,7 +27,6 @@ export type TicketRecord = {
   title: string;
   path: string;
   dependencies: string[];
-  profileName?: string;
   status: TicketStatus;
   blockedReason?: string;
   startedAt?: string;
@@ -51,9 +39,39 @@ export type TicketRegistry = {
   feature: string;
   version: 1;
   updatedAt: string;
-  profileName?: string;
-  review?: FeatureReviewRecord;
   tickets: TicketRecord[];
+};
+
+// ─── Config ───────────────────────────────────────────────────────────────────
+
+/**
+ * The five agent roles in the feature workflow:
+ * - planner  : reads the spec, creates execution plan + tickets
+ * - tester   : writes tests before implementation (TDD red phase)
+ * - worker   : implements the ticket
+ * - reviewer : reviews the implementation
+ * - chief    : updates ticket state and maintains feature memory across tickets
+ */
+export type FeatureAgentRole = "planner" | "tester" | "worker" | "reviewer" | "chief";
+
+export type FeatureAgentConfig = {
+  /** Pi agent name to delegate to (e.g. "claude", "worker") */
+  agent?: string;
+  /** Model override for this role */
+  model?: string;
+  /** Thinking intensity */
+  thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  /** Skill names to activate when running this role */
+  skills?: string[];
+};
+
+export type FeatureFlowConfig = {
+  /** Root directory containing feature folders. Default: "./docs/technical-specs" */
+  specsRoot: string;
+  /** Enable TDD-oriented execution. Default: false */
+  tdd?: boolean;
+  /** Per-role agent configuration */
+  agents?: Partial<Record<FeatureAgentRole, FeatureAgentConfig>>;
 };
 
 // ─── Execution ───────────────────────────────────────────────────────────────
@@ -61,48 +79,6 @@ export type TicketRegistry = {
 export type ExecutionChainStep = {
   agent: string;
   task: string;
-};
-
-// ─── Config ───────────────────────────────────────────────────────────────────
-
-export type FeatureAgentName = "planner" | "worker" | "reviewer";
-
-export type FeatureAgentConfig = {
-  model?: string;
-  thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
-  agent?: string;
-};
-
-export type FeatureExecutionProfile = {
-  preferSubagents?: boolean;
-  matchAny?: string[];
-  agents?: Partial<Record<FeatureAgentName, FeatureAgentConfig>>;
-};
-
-/**
- * Configurable spec-authoring skill slots.
- * These are intentionally generic so projects can swap the underlying skills
- * without changing the config schema semantics.
- *
- * @default productRequirementsSkill      = "prd-development"
- * @default requirementsRefinementSkill  = "spec-driven-workflow"
- */
-export type AuthoringSkillsConfig = {
-  /** Skill for writing product-facing requirements: problem framing, scope, users, success criteria. */
-  productRequirementsSkill?: string;
-  /** Skill for tightening requirements into structured FR/NFR/acceptance criteria. */
-  requirementsRefinementSkill?: string;
-};
-
-export type FeatureTicketFlowConfig = {
-  /** Root directory containing feature folders. Default: "./docs/technical-specs" */
-  specsRoot: string;
-  defaultProfile?: string;
-  /** Enables TDD-oriented planning and execution guidance. Responsibility for having a working test suite remains with the user/project. */
-  tdd?: boolean;
-  /** Configurable authoring skill slots. Applied project-wide across all profiles. Defaults are applied during config normalization. */
-  authoringSkills?: Partial<AuthoringSkillsConfig>;
-  profiles?: Record<string, FeatureExecutionProfile>;
 };
 
 // ─── Validation ───────────────────────────────────────────────────────────────
@@ -121,7 +97,6 @@ export type ValidationIssue = {
     | "missing-dependency"
     | "dependency-cycle"
     | "orphan-ticket"
-    | "missing-ticket-profile"
     | "ticket-template-mismatch"
     | "execution-plan-template-mismatch";
   message: string;
@@ -134,4 +109,25 @@ export type FeatureValidationResult = {
   featurePath: string;
   valid: boolean;
   issues: ValidationIssue[];
+};
+
+// ─── Cost tracking ─────────────────────────────────────────────────────────
+
+export type TicketCostEntry = {
+  ticketId: string;
+  phase: "tester" | "worker";
+  runIndex: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUsd: number;
+  recordedAt: string;
+};
+
+export type FeatureCost = {
+  feature: string;
+  totalCostUsd: number;
+  entries: TicketCostEntry[];
+  updatedAt: string;
 };

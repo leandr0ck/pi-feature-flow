@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createTestSession, when, says, type TestSession } from "@marcfargas/pi-test-harness";
 import { loadConfig, resolveSpecsRoot } from "../src/config.js";
-import { loadRegistry } from "../src/registry.js";
+import { loadRegistry, saveRegistry, featureMemoryPath } from "../src/registry.js";
 
 process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || "test-key";
 
@@ -37,11 +37,12 @@ function messageText(message: { content?: string | Array<{ type: string; text?: 
     .join("\n");
 }
 
-async function settleSession(t: TestSession) {
+async function settleSession(t: TestSession, ms = 100) {
   await (t.session.agent as { waitForIdle?: () => Promise<void> }).waitForIdle?.();
-  await new Promise((resolve) => setTimeout(resolve, 25));
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Seed a feature with spec + execution plan + tickets ready for execution */
 async function seedFeature(
   cwd: string,
   feature: string,
@@ -49,10 +50,32 @@ async function seedFeature(
 ) {
   const { featureRoot, ticketsRoot } = await featurePaths(cwd, feature);
   await mkdir(ticketsRoot, { recursive: true });
-  await writeFile(path.join(featureRoot, "01-master-spec.md"), `# ${feature} master spec\n\n## Goal\nTest feature\n`, "utf8");
+  await writeFile(
+    path.join(featureRoot, "01-master-spec.md"),
+    `# ${feature}\n\n## Goal\nTest feature.\n\n## Acceptance Criteria\n- Works.\n`,
+    "utf8",
+  );
   await writeFile(
     path.join(featureRoot, "02-execution-plan.md"),
-    `# ${feature} execution plan\n\n## Approach Summary\n- Deliver a minimal valid feature package.\n\n## Ticket Sequence\n1. STK-001 — first slice\n\n## Dependency Logic\n- Keep dependencies explicit and minimal.\n\n## Validation Strategy\n- Validate planning artifacts before execution.\n\n## Rollout Notes\n- Not applicable for tests.\n`,
+    [
+      `# ${feature} execution plan`,
+      "",
+      "## Approach Summary",
+      "- Deliver a minimal valid feature package.",
+      "",
+      "## Ticket Sequence",
+      "1. STK-001 — first slice",
+      "",
+      "## Dependency Logic",
+      "- Keep dependencies explicit and minimal.",
+      "",
+      "## Validation Strategy",
+      "- Validate planning artifacts before execution.",
+      "",
+      "## Rollout Notes",
+      "- Not applicable for tests.",
+      "",
+    ].join("\n"),
     "utf8",
   );
 
@@ -61,9 +84,22 @@ async function seedFeature(
   }
 }
 
-async function writeFeatureConfig(cwd: string, yaml: string) {
-  await mkdir(path.join(cwd, ".pi"), { recursive: true });
-  await writeFile(path.join(cwd, ".pi", "feature-ticket-flow.yaml"), yaml, "utf8");
+function validTicket(id: string, requires = "none"): string {
+  return [
+    `# ${id} — Test ticket`,
+    "",
+    "## Goal",
+    "Implement a minimal test slice.",
+    "",
+    `- Requires: ${requires}`,
+    "",
+    "## Implementation Notes",
+    "- Keep the change minimal.",
+    "",
+    "## Acceptance Criteria",
+    "- The slice is verifiable.",
+    "",
+  ].join("\n");
 }
 
 describe("feature-ticket-flow integration", () => {
@@ -71,7 +107,9 @@ describe("feature-ticket-flow integration", () => {
 
   afterEach(() => t?.dispose());
 
-  it("scaffolds a feature via /init-feature", async () => {
+  // ── /init-feature ──────────────────────────────────────────────────────────
+
+  it("scaffolds a feature directory with a stub spec via /init-feature", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
@@ -81,97 +119,154 @@ describe("feature-ticket-flow integration", () => {
     await t.run(when("/init-feature demo-feature", []));
 
     const { featureRoot, ticketsRoot } = await featurePaths(t.cwd, "demo-feature");
-    const masterSpec = await readFile(path.join(featureRoot, "01-master-spec.md"), "utf8");
-    const executionPlan = await readFile(path.join(featureRoot, "02-execution-plan.md"), "utf8");
-    const starterTicket = await readFile(path.join(ticketsRoot, "STK-001.md"), "utf8");
+    const specContent = await readFile(path.join(featureRoot, "01-master-spec.md"), "utf8");
 
-    expect(masterSpec).toContain("demo-feature");
-    expect(executionPlan).toContain("execution plan");
-    expect(executionPlan).toContain("## Approach Summary");
-    expect(executionPlan).toContain("## Ticket Sequence");
-    expect(starterTicket).toContain("STK-001");
-    expect(starterTicket).toContain("- Profile: default");
-    expect(starterTicket).toContain("## Implementation Notes");
-    expect(starterTicket).toContain("## Acceptance Criteria");
+    expect(specContent).toContain("demo-feature");
+    expect(specContent).toContain("## Goal");
+    // No execution plan or tickets yet — user fills in the spec first
+    await expect(readFile(path.join(featureRoot, "02-execution-plan.md"), "utf8")).rejects.toThrow();
   });
 
-  it("uses /feature without requiring a profile and asks for ticket-level profiles", async () => {
+  // ── /plan-feature prompt ───────────────────────────────────────────────────
+
+  it("sends the planner prompt when /plan-feature is run on a feature with a spec", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
     });
 
-    await writeFeatureConfig(
-      t.cwd,
-      [
-        "profiles:",
-        "  default: {}",
-        "  frontend: {}",
-        "  backend: {}",
-      ].join("\n"),
+    const { featureRoot } = await featurePaths(t.cwd, "my-feature");
+    await mkdir(path.join(featureRoot, "tickets"), { recursive: true });
+    await writeFile(
+      path.join(featureRoot, "01-master-spec.md"),
+      "# my-feature\n\n## Goal\nBuild something.\n\n## Acceptance Criteria\n- It works.\n",
+      "utf8",
     );
 
     patchHarnessCompatibility(t);
-    await t.run(when("/feature build onboarding flow", []));
+    await t.run(when("/plan-feature my-feature", []));
     await settleSession(t);
 
-    const userMessages = t.events.messages.filter((message) => message.role === "user").map(messageText).join("\n\n");
-    const notifications = t.events.uiCallsFor("notify");
+    const userMessages = t.events.messages
+      .filter((message) => message.role === "user")
+      .map(messageText)
+      .join("\n\n");
 
-    expect(userMessages).toContain("Every ticket must include a `- Profile:` line");
-    expect(userMessages).toContain("Allowed ticket profiles: default, frontend, backend");
-    expect(userMessages).toContain("Execution plan format is strict. Do not invent your own structure.");
-    expect(userMessages).toContain("Ticket file format is strict. Do not invent your own structure.");
+    expect(userMessages).toContain("feature-planning");
+    expect(userMessages).toContain("01-master-spec.md");
+    expect(userMessages).toContain("02-execution-plan.md");
     expect(userMessages).toContain("## Approach Summary");
     expect(userMessages).toContain("## Implementation Notes");
-    expect(notifications.some((call) => String(call.args[0]).includes("Planning spec and tickets..."))).toBe(true);
+    expect(userMessages).toContain("APPROVED, BLOCKED, or NEEDS-FIX");
   });
 
-  it("continues planning on /start-feature when 04-technical-design.md exists and tickets do not yet exist", async () => {
+  it("includes TDD instructions in the planner prompt when TDD is enabled", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
     });
 
-    const { featureRoot, ticketsRoot } = await featurePaths(t.cwd, "technical-gate");
-    await mkdir(ticketsRoot, { recursive: true });
-    await writeFile(path.join(featureRoot, "01-master-spec.md"), "# technical-gate\n\nNeeds technical design\n", "utf8");
-    await writeFile(path.join(featureRoot, "02-execution-plan.md"), "# technical-gate execution plan\n", "utf8");
-    await writeFile(path.join(featureRoot, "04-technical-design.md"), "# technical design\n\nMore detail\n", "utf8");
+    const { featureRoot } = await featurePaths(t.cwd, "tdd-feature");
+    await mkdir(path.join(featureRoot, "tickets"), { recursive: true });
+    await writeFile(
+      path.join(featureRoot, "01-master-spec.md"),
+      "# tdd-feature\n\n## Goal\nTest TDD.\n\n## Acceptance Criteria\n- Tests first.\n",
+      "utf8",
+    );
+    await mkdir(path.join(t.cwd, ".pi"), { recursive: true });
+    await writeFile(
+      path.join(t.cwd, ".pi", "feature-flow.json"),
+      JSON.stringify({ tdd: true }),
+      "utf8",
+    );
 
     patchHarnessCompatibility(t);
-    await t.run(when("/start-feature technical-gate", []));
+    await t.run(when("/plan-feature tdd-feature", []));
     await settleSession(t);
 
-    const userMessages = t.events.messages.filter((message) => message.role === "user").map(messageText).join("\n\n");
-    expect(userMessages).toContain("Continue planning for feature \"technical-gate\"");
-    expect(userMessages).toContain("04-technical-design.md");
+    const userMessages = t.events.messages
+      .filter((m) => m.role === "user")
+      .map(messageText)
+      .join("\n\n");
+
+    expect(userMessages).toContain("TDD is enabled");
   });
 
-  it("blocks /start-feature when validation fails", async () => {
+  it("errors when /plan-feature is run with no spec file", async () => {
+    t = await createTestSession({
+      extensions: [EXTENSION_PATH],
+      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+    });
+
+    const { featureRoot } = await featurePaths(t.cwd, "no-spec");
+    await mkdir(path.join(featureRoot, "tickets"), { recursive: true });
+    // no 01-master-spec.md
+
+    patchHarnessCompatibility(t);
+    await t.run(when("/plan-feature no-spec", []));
+    await settleSession(t);
+
+    const notifications = t.events.uiCallsFor("notify");
+    expect(notifications.some((call) => String(call.args[0]).toLowerCase().includes("spec file not found"))).toBe(
+      true,
+    );
+  });
+
+  // ── Validation ─────────────────────────────────────────────────────────────
+
+  it("blocks /start-feature when the execution plan is missing", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
       mockUI: { select: 0 },
     });
 
-    const { featureRoot, ticketsRoot } = await featurePaths(t.cwd, "broken-feature");
+    const { featureRoot, ticketsRoot } = await featurePaths(t.cwd, "no-plan");
     await mkdir(ticketsRoot, { recursive: true });
-    await writeFile(path.join(featureRoot, "01-master-spec.md"), "# broken-feature\n", "utf8");
+    await writeFile(path.join(featureRoot, "01-master-spec.md"), "# no-plan\n\n## Goal\nTest.\n", "utf8");
+    await writeFile(path.join(ticketsRoot, "STK-001.md"), validTicket("STK-001"), "utf8");
+    // no 02-execution-plan.md
+
+    patchHarnessCompatibility(t);
+    await t.run(when("/start-feature no-plan", []));
+
+    const notifications = t.events.uiCallsFor("notify");
+    expect(notifications.some((call) => String(call.args[0]).includes("failed validation"))).toBe(
+      true,
+    );
+  });
+
+  it("blocks /start-feature when a ticket has a missing dependency", async () => {
+    t = await createTestSession({
+      extensions: [EXTENSION_PATH],
+      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+      mockUI: { select: 0 },
+    });
+
+    const { featureRoot, ticketsRoot } = await featurePaths(t.cwd, "broken-deps");
+    await mkdir(ticketsRoot, { recursive: true });
+    await writeFile(path.join(featureRoot, "01-master-spec.md"), "# broken-deps\n", "utf8");
+    await writeFile(
+      path.join(featureRoot, "02-execution-plan.md"),
+      "# broken-deps execution plan\n\n## Approach Summary\n- test\n\n## Ticket Sequence\n1. STK-001\n\n## Dependency Logic\n- test\n\n## Validation Strategy\n- test\n\n## Rollout Notes\n- N/A\n",
+      "utf8",
+    );
     await writeFile(
       path.join(ticketsRoot, "STK-001.md"),
-      "# STK-001 — Missing dependency\n\n## Goal\nValidate dependency errors.\n\n- Profile: backend\n- Requires: STK-999\n\n## Implementation Notes\n- Keep this ticket intentionally invalid.\n\n## Acceptance Criteria\n- Validation reports the missing dependency.\n",
+      validTicket("STK-001", "STK-999"),
       "utf8",
     );
 
     patchHarnessCompatibility(t);
-    await t.run(when("/start-feature broken-feature", []));
+    await t.run(when("/start-feature broken-deps", []));
 
     const notifications = t.events.uiCallsFor("notify");
-    expect(notifications.some((call) => String(call.args[0]).includes("failed validation"))).toBe(true);
+    expect(notifications.some((call) => String(call.args[0]).includes("failed validation"))).toBe(
+      true,
+    );
   });
 
-  it("blocks /start-feature when a ticket does not follow the required template", async () => {
+  it("blocks /start-feature when a ticket is missing required sections", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
@@ -181,10 +276,15 @@ describe("feature-ticket-flow integration", () => {
     const { featureRoot, ticketsRoot } = await featurePaths(t.cwd, "template-broken");
     await mkdir(ticketsRoot, { recursive: true });
     await writeFile(path.join(featureRoot, "01-master-spec.md"), "# template-broken\n", "utf8");
-    await writeFile(path.join(featureRoot, "02-execution-plan.md"), "# template-broken execution plan\n\n## Approach Summary\n- Broken on purpose\n\n## Ticket Sequence\n1. STK-001 — broken\n\n## Dependency Logic\n- Broken on purpose\n\n## Validation Strategy\n- Broken on purpose\n\n## Rollout Notes\n- Broken on purpose\n", "utf8");
+    await writeFile(
+      path.join(featureRoot, "02-execution-plan.md"),
+      "# template-broken execution plan\n\n## Approach Summary\n- ok\n\n## Ticket Sequence\n1. STK-001\n\n## Dependency Logic\n- ok\n\n## Validation Strategy\n- ok\n\n## Rollout Notes\n- N/A\n",
+      "utf8",
+    );
+    // ticket missing Implementation Notes and Acceptance Criteria
     await writeFile(
       path.join(ticketsRoot, "STK-001.md"),
-      "# STK-001 — Missing sections\n\n## Goal\nDo work\n\n- Profile: default\n- Requires: none\n",
+      "# STK-001 — Incomplete\n\n## Goal\nDo stuff.\n\n- Requires: none\n",
       "utf8",
     );
 
@@ -192,34 +292,14 @@ describe("feature-ticket-flow integration", () => {
     await t.run(when("/start-feature template-broken", []));
 
     const notifications = t.events.uiCallsFor("notify");
-    expect(notifications.some((call) => String(call.args[0]).includes("failed validation"))).toBe(true);
-  });
-
-  it("blocks /start-feature when the execution plan does not follow the required template", async () => {
-    t = await createTestSession({
-      extensions: [EXTENSION_PATH],
-      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
-      mockUI: { select: 0 },
-    });
-
-    const { featureRoot, ticketsRoot } = await featurePaths(t.cwd, "plan-broken");
-    await mkdir(ticketsRoot, { recursive: true });
-    await writeFile(path.join(featureRoot, "01-master-spec.md"), "# plan-broken\n", "utf8");
-    await writeFile(path.join(featureRoot, "02-execution-plan.md"), "# plan-broken execution plan\n\n## Notes\n- wrong format\n", "utf8");
-    await writeFile(
-      path.join(ticketsRoot, "STK-001.md"),
-      "# STK-001 — Valid ticket\n\n## Goal\nDo work\n\n- Profile: default\n- Requires: none\n\n## Implementation Notes\n- Keep valid ticket format.\n\n## Acceptance Criteria\n- Validation should fail because the plan is wrong.\n",
-      "utf8",
+    expect(notifications.some((call) => String(call.args[0]).includes("failed validation"))).toBe(
+      true,
     );
-
-    patchHarnessCompatibility(t);
-    await t.run(when("/start-feature plan-broken", []));
-
-    const notifications = t.events.uiCallsFor("notify");
-    expect(notifications.some((call) => String(call.args[0]).includes("failed validation"))).toBe(true);
   });
 
-  it("auto-marks a started ticket as done when the agent says APPROVED", async () => {
+  // ── Ticket execution ───────────────────────────────────────────────────────
+
+  it("sends execution prompt when /next-ticket is run", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
@@ -227,203 +307,144 @@ describe("feature-ticket-flow integration", () => {
     });
 
     await seedFeature(t.cwd, "demo", [
-      {
-        id: "STK-001",
-        body: "# STK-001 — First ticket\n\n## Goal\nShip the first slice.\n\n- Profile: default\n- Requires: none\n\n## Implementation Notes\n- Start with the thinnest slice.\n\n## Acceptance Criteria\n- The first slice is complete.\n",
-      },
+      { id: "STK-001", body: validTicket("STK-001") },
     ]);
-
-    // Pre-approve so the review gate passes
-    const { specsRoot: specsRootDemo } = await featurePaths(t.cwd, "demo");
-    const registryDemo = await loadRegistry(specsRootDemo, "demo");
-    registryDemo.review = {
-      status: "approved",
-      requestedAt: new Date().toISOString(),
-      reviewedAt: new Date().toISOString(),
-      comments: [],
-      lastAction: "approve",
-    };
-    const fs = await import("node:fs/promises");
-    await fs.writeFile(
-      path.join(specsRootDemo, "demo", "03-ticket-registry.json"),
-      JSON.stringify(registryDemo, null, 2) + "\n",
-      "utf8",
-    );
 
     patchHarnessCompatibility(t);
     await t.run(
-      when("/start-feature demo", [
-        says("APPROVED\nCompleted successfully."),
-      ]),
+      when("/next-ticket demo", []),
     );
-
     await settleSession(t);
 
-    const { specsRoot: finalSpecsRoot } = await featurePaths(t.cwd, "demo");
-    const finalRegistry = await loadRegistry(finalSpecsRoot, "demo");
-    const ticket = finalRegistry.tickets.find((item: { id: string }) => item.id === "STK-001");
-
-    expect(ticket?.status).toBe("done");
-    expect(ticket?.runs).toHaveLength(1);
-    expect(ticket?.runs[0]?.mode).toBe("start");
-    expect(ticket?.runs[0]?.outcome).toBe("done");
+    // Verify execution prompt was sent
+    const userMessages = t.events.messages
+      .filter((m) => m.role === "user")
+      .map(messageText)
+      .join("\n\n");
+    expect(userMessages).toContain("STK-001");
+    expect(userMessages).toContain("feature-execution");
   });
 
-  it("uses the ticket profile before the feature fallback profile during execution", async () => {
+  it("sends the tester prompt as first message when TDD is enabled", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
       mockUI: { select: 0 },
     });
 
-    await writeFeatureConfig(
-      t.cwd,
-      [
-        "profiles:",
-        "  default: {}",
-        "  frontend: {}",
-        "  backend: {}",
-      ].join("\n"),
-    );
-
-    await seedFeature(t.cwd, "profile-routing", [
-      {
-        id: "STK-001",
-        body: "# STK-001 — Backend ticket\n\n## Goal\nRun backend work.\n\n- Profile: backend\n- Requires: none\n\n## Implementation Notes\n- Use the backend profile.\n\n## Acceptance Criteria\n- Backend task completes.\n",
-      },
+    await seedFeature(t.cwd, "roles-check", [
+      { id: "STK-001", body: validTicket("STK-001") },
     ]);
-
-    const { specsRoot } = await featurePaths(t.cwd, "profile-routing");
-    const registry = await loadRegistry(specsRoot, "profile-routing");
-    registry.profileName = "frontend";
-    // Pre-approve so the review gate passes
-    registry.review = {
-      status: "approved",
-      requestedAt: new Date().toISOString(),
-      reviewedAt: new Date().toISOString(),
-      comments: [],
-      lastAction: "approve",
-    };
-    const fs = await import("node:fs/promises");
-    await fs.writeFile(
-      path.join(specsRoot, "profile-routing", "03-ticket-registry.json"),
-      JSON.stringify(registry, null, 2) + "\n",
+    await mkdir(path.join(t.cwd, ".pi"), { recursive: true });
+    await writeFile(
+      path.join(t.cwd, ".pi", "feature-flow.json"),
+      JSON.stringify({ tdd: true }),
       "utf8",
     );
 
     patchHarnessCompatibility(t);
-    await t.run(
-      when("/start-feature profile-routing", [
-        says("APPROVED\nCompleted successfully."),
-      ]),
-    );
-
+    await t.run(when("/next-ticket roles-check", []));
     await settleSession(t);
 
-    const userMessages = t.events.messages.filter((message) => message.role === "user").map(messageText).join("\n\n");
-    expect(userMessages).toContain("Execution profile: backend");
+    const userMessages = t.events.messages
+      .filter((m) => m.role === "user")
+      .map(messageText)
+      .join("\n\n");
+
+    // First message should be the tester phase prompt
+    expect(userMessages).toContain("Tester phase");
+    expect(userMessages).toContain("red phase");
+    expect(userMessages).toContain("tester-notes");
+    expect(userMessages).toContain("APPROVED (tests written and red)");
   });
 
-  it("prioritizes needs-fix tickets before pending ones on /next-ticket and then auto-advances", async () => {
+  it("sends worker + reviewer + chief prompt when TDD is disabled", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
       mockUI: { select: 0 },
     });
 
-    await seedFeature(t.cwd, "priority", [
-      {
-        id: "STK-001",
-        body: "# STK-001 — Retry me\n\n## Goal\nRetry this ticket first.\n\n- Profile: default\n- Requires: none\n\n## Implementation Notes\n- This ticket should be selected before pending work.\n\n## Acceptance Criteria\n- Retry completes.\n",
-      },
-      {
-        id: "STK-002",
-        body: "# STK-002 — Still pending\n\n## Goal\nLeave this as pending.\n\n- Profile: default\n- Requires: none\n\n## Implementation Notes\n- This should stay second.\n\n## Acceptance Criteria\n- Pending ticket remains available after retry.\n",
-      },
+    await seedFeature(t.cwd, "no-tdd-roles", [
+      { id: "STK-001", body: validTicket("STK-001") },
     ]);
-
-    const { specsRoot } = await featurePaths(t.cwd, "priority");
-    const registry = await loadRegistry(specsRoot, "priority");
-    const ticket = registry.tickets.find((item: { id: string }) => item.id === "STK-001");
-    if (!ticket) throw new Error("missing STK-001");
-    ticket.status = "needs_fix";
-    ticket.runs.push({
-      startedAt: new Date().toISOString(),
-      finishedAt: new Date().toISOString(),
-      mode: "start",
-      outcome: "needs_fix",
-    });
-    // Pre-approve so the review gate passes
-    registry.review = {
-      status: "approved",
-      requestedAt: new Date().toISOString(),
-      reviewedAt: new Date().toISOString(),
-      comments: [],
-      lastAction: "approve",
-    };
-
-    const fs = await import("node:fs/promises");
-    await fs.writeFile(path.join(specsRoot, "priority", "03-ticket-registry.json"), JSON.stringify(registry, null, 2) + "\n", "utf8");
+    // tdd: false (default)
 
     patchHarnessCompatibility(t);
-    await t.run(
-      when("/next-ticket priority", [
-        says("APPROVED\nRetry complete."),
-      ]),
-    );
-
+    await t.run(when("/next-ticket no-tdd-roles", []));
     await settleSession(t);
 
-    const refreshed = await loadRegistry(specsRoot, "priority");
-    const retried = refreshed.tickets.find((item: { id: string }) => item.id === "STK-001");
-    const untouched = refreshed.tickets.find((item: { id: string }) => item.id === "STK-002");
+    const userMessages = t.events.messages
+      .filter((m) => m.role === "user")
+      .map(messageText)
+      .join("\n\n");
 
-    expect(retried?.status).toBe("done");
-    expect(retried?.runs.at(-1)?.mode).toBe("retry");
-    expect(untouched?.status).toBe("done");
+    expect(userMessages).toContain("Worker");
+    expect(userMessages).toContain("Reviewer");
+    expect(userMessages).toContain("Chief");
+    expect(userMessages).toContain("04-feature-memory.md");
   });
 
-  it("shows current profile for a feature with /feature-profile <slug>", async () => {
+  it("references the feature memory file in ticket prompt when it exists", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+      mockUI: { select: 0 },
     });
 
-    await seedFeature(t.cwd, "profile-test", [
-      { id: "STK-001", body: "# STK-001 — Show profile\n\n## Goal\nInspect current profile.\n\n- Profile: frontend\n- Requires: none\n\n## Implementation Notes\n- Minimal valid ticket.\n\n## Acceptance Criteria\n- Profile is visible in status.\n" },
+    await seedFeature(t.cwd, "mem-feature", [
+      { id: "STK-001", body: validTicket("STK-001") },
     ]);
 
-    const { specsRoot } = await featurePaths(t.cwd, "profile-test");
-    const registry = await loadRegistry(specsRoot, "profile-test");
-    registry.profileName = "frontend";
-    const fs = await import("node:fs/promises");
-    await fs.writeFile(
-      path.join(specsRoot, "profile-test", "03-ticket-registry.json"),
-      JSON.stringify(registry, null, 2) + "\n",
+    // Write a memory file as if the chief wrote it after a previous ticket
+    const { specsRoot } = await featurePaths(t.cwd, "mem-feature");
+    const memPath = featureMemoryPath(specsRoot, "mem-feature");
+    await writeFile(
+      memPath,
+      "# Feature Memory: mem-feature\n\n### After STK-000\n- Used Zod for validation\n",
       "utf8",
     );
 
     patchHarnessCompatibility(t);
-    await t.run(when("/feature-profile profile-test", []));
+    await t.run(when("/next-ticket mem-feature", []));
     await settleSession(t);
+
+    const userMessages = t.events.messages
+      .filter((m) => m.role === "user")
+      .map(messageText)
+      .join("\n\n");
+
+    expect(userMessages).toContain("04-feature-memory.md");
+    expect(userMessages).toContain("accumulated context from previous tickets");
   });
 
-  it("sets profile for a feature with /feature-profile <slug> <profile>", async () => {
+  it("prefers needs_fix tickets over pending ones", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+      mockUI: { select: 0 },
     });
 
-    await seedFeature(t.cwd, "set-profile-test", [
-      { id: "STK-001", body: "# STK-001 — Set profile\n\n## Goal\nAllow profile override.\n\n- Profile: frontend\n- Requires: none\n\n## Implementation Notes\n- Minimal valid ticket.\n\n## Acceptance Criteria\n- Profile can be changed.\n" },
+    await seedFeature(t.cwd, "retry-priority", [
+      { id: "STK-001", body: validTicket("STK-001") },
+      { id: "STK-002", body: validTicket("STK-002") },
     ]);
 
+    const { specsRoot } = await featurePaths(t.cwd, "retry-priority");
+    const registry = await loadRegistry(specsRoot, "retry-priority");
+    registry.tickets[0]!.status = "needs_fix";
+    await saveRegistry(specsRoot, "retry-priority", registry);
+
     patchHarnessCompatibility(t);
-    await t.run(when("/feature-profile set-profile-test default", []));
+    await t.run(when("/next-ticket retry-priority", []));
     await settleSession(t);
 
-    const { specsRoot } = await featurePaths(t.cwd, "set-profile-test");
-    const registry = await loadRegistry(specsRoot, "set-profile-test");
-    expect(registry.profileName).toBe("default");
+    const userMessages = t.events.messages
+      .filter((m) => m.role === "user")
+      .map(messageText)
+      .join("\n\n");
+
+    expect(userMessages).toContain("STK-001");
+    expect(userMessages).toContain("retry");
   });
 });

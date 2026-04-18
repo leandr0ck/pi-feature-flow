@@ -6,7 +6,9 @@ import { getTicket } from "./registry.js";
 import { validateTicketTemplate } from "./ticket-template.js";
 
 // Convention-based constants (not configurable)
-const REQUIRED_SPEC_FILES = ["01-master-spec.md", "02-execution-plan.md"] as const;
+// 01-master-spec.md is user-provided (warning if missing); 02-execution-plan.md is required for execution.
+const SPEC_FILE = "01-master-spec.md" as const;
+const REQUIRED_SPEC_FILES = ["02-execution-plan.md"] as const;
 const TICKETS_DIR_NAME = "tickets";
 
 export async function validateFeature(specsRoot: string, feature: string): Promise<FeatureValidationResult> {
@@ -14,14 +16,25 @@ export async function validateFeature(specsRoot: string, feature: string): Promi
   const ticketsDir = path.join(featureDir, TICKETS_DIR_NAME);
   const issues: ValidationIssue[] = [];
 
-  // Check required spec files
+  // Check spec file (user-provided: warn only if missing)
+  const specFilePath = path.join(featureDir, SPEC_FILE);
+  if (!(await pathExists(specFilePath))) {
+    issues.push({
+      severity: "warning",
+      code: "missing-spec-file",
+      message: `Spec file ${SPEC_FILE} not found. Create it before planning.`,
+      filePath: specFilePath,
+    });
+  }
+
+  // Check required generated files
   for (const fileName of REQUIRED_SPEC_FILES) {
     const filePath = path.join(featureDir, fileName);
     if (!(await pathExists(filePath))) {
       issues.push({
         severity: "error",
         code: "missing-spec-file",
-        message: `Missing required spec file: ${fileName}`,
+        message: `Missing required file: ${fileName} — run /plan-feature to generate it.`,
         filePath,
       });
     }
@@ -75,7 +88,6 @@ export async function validateFeature(specsRoot: string, feature: string): Promi
         title: parseTitle(content, id),
         path: absolutePath,
         dependencies: parseDependencies(content),
-        profileName: parseProfileName(content),
         status: "pending" as const,
         updatedAt: new Date().toISOString(),
         runs: [],
@@ -116,16 +128,6 @@ export async function validateFeature(specsRoot: string, feature: string): Promi
         severity: "warning",
         code: "invalid-ticket-id",
         message: `Ticket id ${ticket.id} does not match recommended pattern (STK-001 or T1).`,
-        ticketId: ticket.id,
-        filePath: ticket.path,
-      });
-    }
-
-    if (!ticket.profileName) {
-      issues.push({
-        severity: "error",
-        code: "missing-ticket-profile",
-        message: `Ticket ${ticket.id} is missing a - Profile: <name> line.`,
         ticketId: ticket.id,
         filePath: ticket.path,
       });
@@ -219,13 +221,6 @@ function parseDependencies(content: string): string[] {
 
   const splitter = DEPENDENCY_SPLIT_PATTERN === "," ? /,/ : new RegExp(DEPENDENCY_SPLIT_PATTERN);
   return value.split(splitter).map((part) => part.trim()).filter(Boolean);
-}
-
-function parseProfileName(content: string): string | undefined {
-  const PROFILE_LABEL = "Profile";
-  const match = content.match(new RegExp(`^-\\s*${PROFILE_LABEL}:\\s*(.+)$`, "m"));
-  const value = match?.[1] || "";
-  return value.trim() || undefined;
 }
 
 function detectCycles(tickets: TicketRecord[]): ValidationIssue[] {
