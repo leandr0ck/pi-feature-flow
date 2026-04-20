@@ -2,14 +2,27 @@ import path from "node:path";
 import { loadConfig, renderAgentRoles } from "../config.js";
 import { buildExecutionPlanTemplateInstructions } from "../execution-plan-template.js";
 import { buildTicketTemplateInstructions } from "../ticket-template.js";
-import type { FeatureFlowConfig } from "../types.js";
+import type { FeatureAgentRole, FeatureFlowConfig } from "../types.js";
+
+function renderRoleConfig(config: FeatureFlowConfig, role: FeatureAgentRole): string[] {
+  const roleConfig = config.agents?.[role] ?? {};
+  return [
+    ...(roleConfig.model ? [`model: ${roleConfig.model}`] : []),
+    ...(roleConfig.thinking ? [`thinking: ${roleConfig.thinking}`] : []),
+    ...(roleConfig.skills?.length ? [`skills: ${roleConfig.skills.join(", ")}`] : []),
+  ];
+}
+
+function baseExecutionFiles(featureDir: string, ticketPath: string): string[] {
+  return [
+    `- Spec: ${path.join(featureDir, "01-master-spec.md")}`,
+    `- Execution plan: ${path.join(featureDir, "02-execution-plan.md")}`,
+    `- Ticket: ${ticketPath}`,
+  ];
+}
 
 // ─── Planning prompt ──────────────────────────────────────────────────────────
 
-/**
- * Builds the planning prompt for the planner agent.
- * Reads from an existing spec document and produces execution plan + tickets.
- */
 export function buildFeaturePlanningPrompt(
   feature: string,
   specsRoot: string,
@@ -59,12 +72,8 @@ export function buildFeaturePlanningPrompt(
   ].join("\n");
 }
 
-// ─── Tester prompt (TDD — separate agent, red phase only) ───────────────────
+// ─── Tester prompt ────────────────────────────────────────────────────────────
 
-/**
- * Prompt for the tester agent. Runs independently before the worker.
- * Goal: write failing tests, confirm red state, leave tester notes for the worker.
- */
 export function buildTesterPrompt(
   feature: string,
   ticketId: string,
@@ -73,17 +82,11 @@ export function buildTesterPrompt(
   testerNotesPath: string,
   config: FeatureFlowConfig,
 ): string {
-  const masterSpecPath = path.join(featureDir, "01-master-spec.md");
-  const executionPlanPath = path.join(featureDir, "02-execution-plan.md");
-  const testerConfig = config.agents?.tester ?? {};
-
   return [
     `Run the bundled \`feature-execution\` skill — **Tester phase** for feature "${feature}" ticket "${ticketId}".`,
     "",
     "## Files to read first",
-    `- Spec: ${masterSpecPath}`,
-    `- Execution plan: ${executionPlanPath}`,
-    `- Ticket: ${ticketPath}`,
+    ...baseExecutionFiles(featureDir, ticketPath),
     "",
     "## Your role: Tester (TDD red phase)",
     "- Use the `tdd` skill if available.",
@@ -108,22 +111,16 @@ export function buildTesterPrompt(
     "```",
     "",
     "## Agent configuration",
-    ...(testerConfig.model ? [`model: ${testerConfig.model}`] : []),
-    ...(testerConfig.thinking ? [`thinking: ${testerConfig.thinking}`] : []),
-    ...(testerConfig.skills?.length ? [`skills: ${testerConfig.skills.join(", ")}`] : []),
+    ...renderRoleConfig(config, "tester"),
     "",
     "When you finish, clearly say APPROVED (tests written and red), BLOCKED, or NEEDS-FIX.",
     "Include a one-line summary.",
   ].join("\n");
 }
 
-// ─── Ticket execution prompt ──────────────────────────────────────────────────
+// ─── Worker / Reviewer / Chief prompts ───────────────────────────────────────
 
-/**
- * Builds the full ticket execution prompt including all agent roles:
- * tester (if TDD) → worker → reviewer → chief
- */
-export function buildTicketExecutionPrompt(
+export function buildWorkerPrompt(
   feature: string,
   ticketId: string,
   featureDir: string,
@@ -134,76 +131,122 @@ export function buildTicketExecutionPrompt(
   config: FeatureFlowConfig,
   phase: "start" | "resume" | "retry",
 ): string {
-  const masterSpecPath = path.join(featureDir, "01-master-spec.md");
-  const executionPlanPath = path.join(featureDir, "02-execution-plan.md");
-
-  const lines: string[] = [
-    `Run the bundled \`feature-execution\` skill — **Worker/Reviewer/Chief phase** for feature "${feature}" ticket "${ticketId}".`,
+  const lines = [
+    `Run the bundled \`feature-execution\` skill — **Worker phase** for feature "${feature}" ticket "${ticketId}".`,
     `Phase: ${phase}`,
     "",
     "## Files to read first",
-    `- Spec: ${masterSpecPath}`,
-    `- Execution plan: ${executionPlanPath}`,
-    `- Ticket: ${ticketPath}`,
+    ...baseExecutionFiles(featureDir, ticketPath),
   ];
 
-  if (testerNotesPath) {
-    lines.push(`- Tester notes: ${testerNotesPath}  (failing tests written by the tester — read before implementing)`);
-  }
-
-  if (memoryPath) {
-    lines.push(`- Feature memory: ${memoryPath}  (accumulated context from previous tickets)`);
-  }
-
-  if (phase === "retry" && workerContextPath) {
-    lines.push(`- Worker context: ${workerContextPath}  (⚠️ RETRY — read this first: what was done, what failed, continuation notes)`);
-  }
+  if (testerNotesPath) lines.push(`- Tester notes: ${testerNotesPath}`);
+  if (memoryPath) lines.push(`- Feature memory: ${memoryPath}  (accumulated context from previous tickets)`);
+  if (phase === "retry" && workerContextPath) lines.push(`- Worker context: ${workerContextPath}  (⚠️ RETRY — read this first on retry)`);
 
   lines.push(
     "",
-    "## Execution rules",
+    "## Your role: Worker",
     "- Implement ONLY the assigned ticket. Do not pull future tickets into scope.",
     "- Prefer minimal, testable changes.",
+    ...(testerNotesPath
+      ? [
+          "- The tester has already written failing tests. Read the tester notes before writing any code.",
+          "- Implement the smallest slice that makes those tests pass (green phase).",
+          "- Clean up and refactor if safe.",
+        ]
+      : [
+          "- Implement the smallest slice that satisfies the ticket goal.",
+          "- Run targeted verification where possible.",
+        ]),
     "- If you discover follow-up work, record it in the ticket or execution plan rather than silently expanding scope.",
     "- If you cannot complete the ticket due to a real blocker, stop and explain clearly.",
+    "",
+    "## Agent configuration",
+    ...renderRoleConfig(config, "worker"),
+    "",
+    "When you finish, clearly say whether the result is APPROVED, BLOCKED, or NEEDS-FIX.",
+    "Include a one-line summary of what was implemented.",
   );
 
-  if (testerNotesPath) {
-    lines.push(
-      "",
-      "## Worker (TDD — green phase)",
-      "- The tester has already written failing tests. Read the tester notes before writing any code.",
-      "- Implement the smallest slice that makes those tests pass (green phase).",
-      "- Clean up and refactor if safe (refactor phase).",
-    );
-  } else {
-    lines.push(
-      "",
-      "## Worker",
-      "- Implement the smallest slice that satisfies the ticket goal.",
-      "- Run targeted verification where possible.",
-    );
-  }
+  return lines.join("\n");
+}
+
+export function buildReviewerPrompt(
+  feature: string,
+  ticketId: string,
+  featureDir: string,
+  ticketPath: string,
+  memoryPath: string | undefined,
+  reviewerNotesPath: string,
+  config: FeatureFlowConfig,
+): string {
+  const lines = [
+    `Run the bundled \`feature-execution\` skill — **Reviewer phase** for feature "${feature}" ticket "${ticketId}".`,
+    "",
+    "## Files to read first",
+    ...baseExecutionFiles(featureDir, ticketPath),
+  ];
+
+  if (memoryPath) lines.push(`- Feature memory: ${memoryPath}`);
 
   lines.push(
     "",
-    "## Reviewer",
+    "## Your role: Reviewer",
     "- Use the `code-reviewer` skill if available.",
-    "- Review the diff against the ticket acceptance criteria.",
-    "- Verify tests pass.",
-    "- Flag any concerns before the chief updates state.",
+    "- Review the latest implementation against the ticket acceptance criteria.",
+    "- Verify tests pass or clearly explain what is still failing.",
+    "- Flag correctness, regression, and maintainability issues.",
+    "",
+    `## Output: write reviewer notes to ${reviewerNotesPath}`,
+    "Use this exact format:",
+    "```md",
+    `# Reviewer Notes — ${ticketId}`,
+    "",
+    "## Verdict",
+    "<APPROVED | NEEDS-FIX | BLOCKED>",
+    "",
+    "## Findings",
+    "- <issue or 'none'>",
+    "",
+    "## Evidence",
+    "- <tests run, files inspected, or why blocked>",
+    "```",
+    "",
+    "## Agent configuration",
+    ...renderRoleConfig(config, "reviewer"),
+    "",
+    "When you finish, clearly say whether the result is APPROVED, BLOCKED, or NEEDS-FIX.",
+    "Include a one-line review summary.",
   );
 
-  lines.push(
+  return lines.join("\n");
+}
+
+export function buildChiefPrompt(
+  feature: string,
+  ticketId: string,
+  featureDir: string,
+  ticketPath: string,
+  memoryPath: string,
+  reviewerNotesPath: string,
+  workerContextPath: string,
+  config: FeatureFlowConfig,
+): string {
+  return [
+    `Run the bundled \`feature-execution\` skill — **Chief phase** for feature "${feature}" ticket "${ticketId}".`,
     "",
-    "## Chief — update state and memory",
-    "After the reviewer finishes:",
-    `1. Append a dated learnings entry to ${memoryPath || path.join(featureDir, "04-feature-memory.md")}`,
+    "## Files to read first",
+    ...baseExecutionFiles(featureDir, ticketPath),
+    `- Reviewer notes: ${reviewerNotesPath}`,
+    `- Feature memory: ${memoryPath}`,
+    "",
+    "## Your role: Chief — finalize knowledge handoff",
+    `1. Append a dated learnings entry to ${memoryPath}`,
     "   - Technical decisions made in this ticket",
-    "   - Patterns discovered (useful utilities, conventions, traps to avoid)",
+    "   - Patterns discovered (utilities, conventions, traps to avoid)",
     "   - Any context that will help the next ticket start faster",
-    "   - If the file doesn't exist yet, create it with a short header first.",
-    `2. Write a worker context file to ${workerContextPath || path.join(featureDir, "tickets", `${ticketId}-worker-context.md`)}`,
+    "   - If the file does not exist yet, create it with a short header first.",
+    `2. Write a worker context file to ${workerContextPath}`,
     "   Use this exact format:",
     "   ```md",
     `   # Worker Context — ${ticketId}`,
@@ -218,19 +261,16 @@ export function buildTicketExecutionPrompt(
     "   - <issue or 'none'>",
     "",
     "   ## Continuation notes",
-    "   - <what the next attempt must know: what not to redo, what to fix, where it failed>",
+    "   - <what the next attempt must know>",
     "   ```",
-    "   This file is read on retry — keep it concise and actionable.",
-    "3. The ticket registry is updated automatically — do not modify it directly.",
+    "3. Do NOT modify the ticket registry directly. The extension updates it automatically.",
     "",
     "## Agent configuration",
-    ...renderAgentRoles(config),
+    ...renderRoleConfig(config, "chief"),
     "",
     "When you finish, clearly say whether the result is APPROVED, BLOCKED, or NEEDS-FIX.",
-    "Include a one-line summary of what was done.",
-  );
-
-  return lines.join("\n");
+    "Include a one-line summary of what was recorded.",
+  ].join("\n");
 }
 
 // ─── Subagent guidance ────────────────────────────────────────────────────────
@@ -255,8 +295,31 @@ export function buildSubagentGuidance(config: FeatureFlowConfig, phase: "plannin
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 export function resolveSpecFileInFeatureDir(featureDir: string): string {
-  // Convention: spec file is 01-master-spec.md
   return path.join(featureDir, "01-master-spec.md");
+}
+
+export function buildTicketExecutionPrompt(
+  feature: string,
+  ticketId: string,
+  featureDir: string,
+  ticketPath: string,
+  memoryPath: string | undefined,
+  testerNotesPath: string | undefined,
+  workerContextPath: string | undefined,
+  config: FeatureFlowConfig,
+  phase: "start" | "resume" | "retry",
+): string {
+  return buildWorkerPrompt(
+    feature,
+    ticketId,
+    featureDir,
+    ticketPath,
+    memoryPath,
+    testerNotesPath,
+    workerContextPath,
+    config,
+    phase,
+  );
 }
 
 export async function loadConfigForCwd(cwd: string) {

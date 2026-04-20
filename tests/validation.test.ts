@@ -165,6 +165,44 @@ describe("validateFeature", () => {
     expect(result.issues.some((i) => i.code === "no-tickets")).toBe(true);
   });
 
+  it("ignores worker/reviewer/tester artifact markdown files during validation", async () => {
+    const specsRoot = await makeTempDir();
+    dirs.push(specsRoot);
+    const featureDir = path.join(specsRoot, "artifact-validation");
+    const ticketsDir = path.join(featureDir, "tickets");
+    await mkdir(ticketsDir, { recursive: true });
+    await writeFile(path.join(featureDir, "01-master-spec.md"), `# artifact-validation\n\n## Goal\nTest.\n`, "utf8");
+    await writeFile(path.join(featureDir, "02-execution-plan.md"), validPlan("artifact-validation"), "utf8");
+    await writeFile(path.join(ticketsDir, "STK-001.md"), validTicket("STK-001"), "utf8");
+    await writeFile(path.join(ticketsDir, "STK-001-worker-context.md"), "# Worker Context — STK-001\n", "utf8");
+    await writeFile(path.join(ticketsDir, "STK-001-reviewer-notes.md"), "# Reviewer Notes — STK-001\n", "utf8");
+    await writeFile(path.join(ticketsDir, "STK-001-tester-notes.md"), "# Tester Notes — STK-001\n", "utf8");
+
+    const result = await validateFeature(specsRoot, "artifact-validation");
+
+    expect(result.valid).toBe(true);
+    expect(result.issues.some((i) => i.ticketId?.includes("worker-context"))).toBe(false);
+    expect(result.issues.some((i) => i.ticketId?.includes("reviewer-notes"))).toBe(false);
+    expect(result.issues.some((i) => i.ticketId?.includes("tester-notes"))).toBe(false);
+  });
+
+  it("errors when only artifact markdown files exist in the tickets directory", async () => {
+    const specsRoot = await makeTempDir();
+    dirs.push(specsRoot);
+    const featureDir = path.join(specsRoot, "artifacts-only");
+    const ticketsDir = path.join(featureDir, "tickets");
+    await mkdir(ticketsDir, { recursive: true });
+    await writeFile(path.join(featureDir, "01-master-spec.md"), `# artifacts-only\n\n## Goal\nTest.\n`, "utf8");
+    await writeFile(path.join(featureDir, "02-execution-plan.md"), validPlan("artifacts-only"), "utf8");
+    await writeFile(path.join(ticketsDir, "STK-001-worker-context.md"), "# Worker Context — STK-001\n", "utf8");
+    await writeFile(path.join(ticketsDir, "STK-001-reviewer-notes.md"), "# Reviewer Notes — STK-001\n", "utf8");
+
+    const result = await validateFeature(specsRoot, "artifacts-only");
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((i) => i.code === "no-tickets")).toBe(true);
+  });
+
   // ── Duplicate ticket IDs ──────────────────────────────────────────────────
   // NOTE: case-insensitive duplicate file names (e.g. STK-001.md vs stk-001.md)
   // cannot be tested on macOS (APFS/HFS+ case-insensitive) because the OS treats

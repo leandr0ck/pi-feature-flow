@@ -18,11 +18,19 @@ export type PendingExecution =
       specsRoot: string;
     }
   | {
-      /** Worker → reviewer → chief phase. Runs after the tester (TDD) or directly (non-TDD). */
+      /** Explicit execution phases: worker → reviewer → chief. */
       kind: "ticket-execution";
       feature: string;
       ticketId: string;
       phase: "start" | "resume" | "retry";
+      executionRole: "worker" | "reviewer" | "chief";
+      accumulatedUsage?: {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens: number;
+        cacheWriteTokens: number;
+        costUsd: number;
+      };
       cwd: string;
       specsRoot: string;
     };

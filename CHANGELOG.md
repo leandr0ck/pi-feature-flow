@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- **Explicit runtime execution phases**: execution is now split into real `worker -> reviewer -> chief` phases instead of one combined worker/reviewer/chief turn.
+- **Runtime model switching per role**: `agents.<role>.model` and `agents.<role>.thinking` are now applied before each real phase launch, not just rendered into prompts.
+- **Per-phase cost accounting** now records `tester`, `worker`, `reviewer`, and `chief` separately.
+
+### Added
+- **Reviewer notes artifact**: reviewer now writes `tickets/<id>-reviewer-notes.md`, which the chief reads before finalizing memory / worker context.
+- **Integration coverage for model switching** across planner, tester, worker, and reviewer handoffs.
+
 ## [0.3.0] - 2026-04-18
 
 ### Added

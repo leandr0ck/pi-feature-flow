@@ -29,8 +29,22 @@ export function workerContextPath(specsRoot: string, feature: string, ticketId: 
   return path.join(featureRoot(specsRoot, feature), DEFAULT_TICKETS_DIR_NAME, `${ticketId}-worker-context.md`);
 }
 
+export function reviewerNotesPath(specsRoot: string, feature: string, ticketId: string) {
+  return path.join(featureRoot(specsRoot, feature), DEFAULT_TICKETS_DIR_NAME, `${ticketId}-reviewer-notes.md`);
+}
+
 export function featureCostPath(specsRoot: string, feature: string) {
   return path.join(featureRoot(specsRoot, feature), "05-cost.json");
+}
+
+const TICKET_ARTIFACT_SUFFIXES = [
+  "-tester-notes.md",
+  "-reviewer-notes.md",
+  "-worker-context.md",
+] as const;
+
+export function isPrimaryTicketMarkdown(file: string): boolean {
+  return file.endsWith(".md") && !TICKET_ARTIFACT_SUFFIXES.some((suffix) => file.endsWith(suffix));
 }
 
 // ─── Feature discovery ─────────────────────────────────────────────────────────
@@ -93,7 +107,7 @@ export async function readFeatureMemory(specsRoot: string, feature: string): Pro
 
 async function discoverTickets(ticketsDir: string): Promise<TicketRecord[]> {
   const files = (await fs.readdir(ticketsDir))
-    .filter((file) => file.endsWith(".md"))
+    .filter(isPrimaryTicketMarkdown)
     .sort();
 
   const tickets = await Promise.all(

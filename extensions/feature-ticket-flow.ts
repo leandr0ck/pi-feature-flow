@@ -1,12 +1,13 @@
 import path from "node:path";
 import { promises as fsPromises } from "node:fs";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { loadConfig, resolveSpecsRoot, resolveTddEnabled } from "../src/config.js";
 import {
   areDependenciesDone,
   featureCostPath,
   featureMemoryPath,
   readFeatureCost,
+  reviewerNotesPath,
   workerContextPath,
   testerNotesPath,
   findNextAvailableTicket,
@@ -21,10 +22,12 @@ import {
 import { renderStatus, renderValidation } from "../src/render.js";
 import { resolveFeatureSlug, validateBeforeExecution } from "../src/feature-flow/guards.js";
 import {
+  buildChiefPrompt,
   buildFeaturePlanningPrompt,
+  buildReviewerPrompt,
   buildSubagentGuidance,
   buildTesterPrompt,
-  buildTicketExecutionPrompt,
+  buildWorkerPrompt,
   resolveSpecFileInFeatureDir,
 } from "../src/feature-flow/prompts.js";
 import {
@@ -48,9 +51,7 @@ import {
 import { createFeatureCompletions } from "../src/feature-flow/ui.js";
 import { validateFeature } from "../src/validation.js";
 
-type CommandContext = {
-  cwd: string;
-  isIdle: () => boolean;
+type CommandContext = ExtensionCommandContext & {
   ui: {
     notify: (msg: string, type?: "error" | "warning" | "info") => void;
     select: Function;
@@ -161,7 +162,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
           `Feature ${pending.feature} planned. ${registry.tickets.length} tickets. Starting implementation...`,
           "info",
         );
-        await startPreparedNextTicket(pi, pending.feature, pending.cwd, pending.specsRoot);
+        await startPreparedNextTicket(pi, pending.feature, pending.cwd, pending.specsRoot, ctx);
         return;
       }
 
@@ -196,7 +197,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
 
         // Tester approved — hand off to worker chain
         ctx.ui.notify(`Tester done for ${pending.ticketId}. Starting worker...`, "info");
-        await launchWorkerChain(pi, pending.feature, pending.ticketId, pending.cwd, pending.specsRoot, "start");
+        await launchWorkerChain(pi, ctx, pending.feature, pending.ticketId, pending.cwd, pending.specsRoot, "start");
         return;
       }
 
@@ -205,21 +206,12 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       const ticket = getTicket(registry, pending.ticketId);
       if (!ticket) return;
 
-      // Record cost and usage for this run
       const usage = extractUsage(event.messages as Array<{ role: string; content?: unknown; usage?: unknown }>);
-      const runIndex = ticket.runs.length;
+      const cumulativeUsage = sumUsage(pending.accumulatedUsage, usage);
+      const runIndex = Math.max(0, ticket.runs.length - 1);
       const now = new Date().toISOString();
 
-      resolveTicketStatus(registry, pending.ticketId, parsed.status, parsed.note);
-      // Attach usage to the current run (last one, just added by resolveTicketStatus)
-      if (ticket.runs.length > 0) {
-        const lastRun = ticket.runs[ticket.runs.length - 1]!;
-        lastRun.usage = usage;
-      }
-      await saveRegistry(pending.specsRoot, pending.feature, registry);
-
-      // Record feature-level cost
-      await recordTicketCost(pending.specsRoot, pending.feature, pending.ticketId, "worker", runIndex, {
+      await recordTicketCost(pending.specsRoot, pending.feature, pending.ticketId, pending.executionRole, runIndex, {
         ...usage,
         recordedAt: now,
       });
@@ -228,15 +220,55 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       const costStr = usage.costUsd > 0 ? ` — $${usage.costUsd.toFixed(4)}` : "";
       emitInfo(
         pi,
-        `Auto-updated ${pending.ticketId} for ${pending.feature}: ${label}${parsed.note ? `\n${parsed.note}` : ""}${costStr}`,
+        `${pending.executionRole} phase for **${pending.ticketId}** (${pending.feature}): ${label}${parsed.note ? `\n${parsed.note}` : ""}${costStr}`,
       );
+
+      if (parsed.status === "done") {
+        if (pending.executionRole === "worker") {
+          ctx.ui.notify(`Worker done for ${pending.ticketId}. Starting reviewer...`, "info");
+          await launchReviewerPhase(
+            pi,
+            ctx,
+            pending.feature,
+            pending.ticketId,
+            pending.cwd,
+            pending.specsRoot,
+            pending.phase,
+            cumulativeUsage,
+          );
+          return;
+        }
+
+        if (pending.executionRole === "reviewer") {
+          ctx.ui.notify(`Reviewer done for ${pending.ticketId}. Starting chief...`, "info");
+          await launchChiefPhase(
+            pi,
+            ctx,
+            pending.feature,
+            pending.ticketId,
+            pending.cwd,
+            pending.specsRoot,
+            pending.phase,
+            cumulativeUsage,
+          );
+          return;
+        }
+      }
+
+      resolveTicketStatus(registry, pending.ticketId, parsed.status, parsed.note);
+      if (ticket.runs.length > 0) {
+        const lastRun = ticket.runs[ticket.runs.length - 1]!;
+        lastRun.usage = cumulativeUsage;
+      }
+      await saveRegistry(pending.specsRoot, pending.feature, registry);
+
       ctx.ui.notify(
         `Ticket ${pending.ticketId}: ${label}`,
         parsed.status === "blocked" ? "warning" : "info",
       );
 
       if (parsed.status === "done") {
-        await startPreparedNextTicket(pi, pending.feature, pending.cwd, pending.specsRoot);
+        await startPreparedNextTicket(pi, pending.feature, pending.cwd, pending.specsRoot, ctx);
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
@@ -304,6 +336,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       const planPending = { kind: "feature-plan" as const, feature, cwd: ctx.cwd, specsRoot };
       setPendingExecution(planPending);
       await persistCheckpoint(planPending);
+      await applyRoleRuntimeConfig(pi, ctx, config, "planner");
       pi.sendUserMessage(
         buildFeaturePlanningPrompt(feature, specsRoot, specPath, config, tddEnabled),
       );
@@ -508,6 +541,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         await saveRegistry(specsRoot, feature, registry);
         await launchTicketExecution(
           pi,
+          ctx,
           feature,
           current.id,
           ctx.cwd,
@@ -595,6 +629,76 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
+type RoleRuntimeContext = Pick<ExtensionContext, "modelRegistry" | "model" | "ui">;
+type ExecutionRole = "worker" | "reviewer" | "chief";
+type UsageTotals = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUsd: number;
+};
+
+function sumUsage(base?: Partial<UsageTotals>, next?: Partial<UsageTotals>): UsageTotals {
+  return {
+    inputTokens: (base?.inputTokens ?? 0) + (next?.inputTokens ?? 0),
+    outputTokens: (base?.outputTokens ?? 0) + (next?.outputTokens ?? 0),
+    cacheReadTokens: (base?.cacheReadTokens ?? 0) + (next?.cacheReadTokens ?? 0),
+    cacheWriteTokens: (base?.cacheWriteTokens ?? 0) + (next?.cacheWriteTokens ?? 0),
+    costUsd: (base?.costUsd ?? 0) + (next?.costUsd ?? 0),
+  };
+}
+
+function parseConfiguredModelRef(
+  raw: string | undefined,
+  currentProvider: string | undefined,
+): { provider: string; modelId: string } | undefined {
+  const value = raw?.trim();
+  if (!value) return undefined;
+
+  const slashIndex = value.indexOf("/");
+  if (slashIndex >= 0) {
+    const provider = value.slice(0, slashIndex).trim();
+    const modelId = value.slice(slashIndex + 1).trim();
+    if (provider && modelId) return { provider, modelId };
+  }
+
+  if (currentProvider) {
+    return { provider: currentProvider, modelId: value };
+  }
+
+  return undefined;
+}
+
+async function applyRoleRuntimeConfig(
+  pi: ExtensionAPI,
+  ctx: RoleRuntimeContext | undefined,
+  config: Awaited<ReturnType<typeof loadConfig>>,
+  role: "planner" | "tester" | "worker" | "reviewer" | "chief",
+): Promise<void> {
+  if (!ctx) return;
+
+  const roleConfig = config.agents?.[role];
+  if (!roleConfig) return;
+
+  const modelRef = parseConfiguredModelRef(roleConfig.model, ctx.model?.provider);
+  if (modelRef) {
+    const targetModel = ctx.modelRegistry.find(modelRef.provider, modelRef.modelId);
+    if (!targetModel) {
+      ctx.ui.notify(`Configured ${role} model not found: ${roleConfig.model}`, "warning");
+    } else if (!ctx.model || ctx.model.provider !== targetModel.provider || ctx.model.id !== targetModel.id) {
+      const success = await pi.setModel(targetModel);
+      if (!success) {
+        ctx.ui.notify(`Could not switch to ${role} model ${roleConfig.model} (missing API key?)`, "warning");
+      }
+    }
+  }
+
+  if (roleConfig.thinking) {
+    pi.setThinkingLevel(roleConfig.thinking);
+  }
+}
+
 async function runNextTicketFlow(pi: ExtensionAPI, feature: string, ctx: CommandContext) {
   const config = await loadConfig(ctx.cwd);
   const specsRoot = resolveSpecsRoot(ctx.cwd, config);
@@ -617,7 +721,7 @@ async function runNextTicketFlow(pi: ExtensionAPI, feature: string, ctx: Command
     if (choice.startsWith("Resume ")) {
       startTicketRun(registry, current.id, "resume");
       await saveRegistry(specsRoot, feature, registry);
-      await launchTicketExecution(pi, feature, current.id, ctx.cwd, specsRoot, "resume");
+      await launchTicketExecution(pi, ctx, feature, current.id, ctx.cwd, specsRoot, "resume");
       return;
     }
     if (choice.includes("done")) {
@@ -636,7 +740,7 @@ async function runNextTicketFlow(pi: ExtensionAPI, feature: string, ctx: Command
     }
   }
 
-  await startPreparedNextTicket(pi, feature, ctx.cwd, specsRoot);
+  await startPreparedNextTicket(pi, feature, ctx.cwd, specsRoot, ctx);
 }
 
 async function startPreparedNextTicket(
@@ -644,6 +748,7 @@ async function startPreparedNextTicket(
   feature: string,
   cwd: string,
   specsRoot: string,
+  ctx?: RoleRuntimeContext,
 ) {
   const refreshed = await loadRegistry(specsRoot, feature);
   const next = findNextAvailableTicket(refreshed);
@@ -673,11 +778,12 @@ async function startPreparedNextTicket(
   startTicketRun(refreshed, next.id, mode);
   await saveRegistry(specsRoot, feature, refreshed);
   emitInfo(pi, `Starting ${next.id} — ${next.title}`);
-  await launchTicketExecution(pi, feature, next.id, cwd, specsRoot, mode);
+  await launchTicketExecution(pi, ctx, feature, next.id, cwd, specsRoot, mode);
 }
 
 async function launchTicketExecution(
   pi: ExtensionAPI,
+  ctx: RoleRuntimeContext | undefined,
   feature: string,
   ticketId: string,
   cwd: string,
@@ -688,15 +794,16 @@ async function launchTicketExecution(
   const tddEnabled = resolveTddEnabled(config);
 
   if (tddEnabled) {
-    await launchTesterPhase(pi, feature, ticketId, cwd, specsRoot, config);
+    await launchTesterPhase(pi, ctx, feature, ticketId, cwd, specsRoot, config);
   } else {
-    await launchWorkerChain(pi, feature, ticketId, cwd, specsRoot, phase, config);
+    await launchWorkerChain(pi, ctx, feature, ticketId, cwd, specsRoot, phase, config);
   }
 }
 
 /** Phase 1 (TDD only): run the tester agent to write failing tests. */
 async function launchTesterPhase(
   pi: ExtensionAPI,
+  ctx: RoleRuntimeContext | undefined,
   feature: string,
   ticketId: string,
   cwd: string,
@@ -704,6 +811,7 @@ async function launchTesterPhase(
   config?: Awaited<ReturnType<typeof loadConfig>>,
 ) {
   const resolvedConfig = config ?? (await loadConfig(cwd));
+  await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "tester");
   const featureDir = path.join(specsRoot, feature);
   const ticketPath = path.join(featureDir, "tickets", `${ticketId}.md`);
   const notesPath = testerNotesPath(specsRoot, feature, ticketId);
@@ -721,9 +829,10 @@ async function launchTesterPhase(
   pi.sendUserMessage(message);
 }
 
-/** Phase 2: run worker → reviewer → chief. Reads tester notes when they exist. */
+/** Phase 2a: worker */
 async function launchWorkerChain(
   pi: ExtensionAPI,
+  ctx: RoleRuntimeContext | undefined,
   feature: string,
   ticketId: string,
   cwd: string,
@@ -732,6 +841,7 @@ async function launchWorkerChain(
   config?: Awaited<ReturnType<typeof loadConfig>>,
 ) {
   const resolvedConfig = config ?? (await loadConfig(cwd));
+  await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "worker");
   const featureDir = path.join(specsRoot, feature);
   const ticketPath = path.join(featureDir, "tickets", `${ticketId}.md`);
 
@@ -745,7 +855,7 @@ async function launchWorkerChain(
   const ctxExists = await fsPromises.access(ctxPath).then(() => true).catch(() => false);
 
   const message = [
-    buildTicketExecutionPrompt(
+    buildWorkerPrompt(
       feature,
       ticketId,
       featureDir,
@@ -761,7 +871,108 @@ async function launchWorkerChain(
     ...buildSubagentGuidance(resolvedConfig, "execution"),
   ].join("\n");
 
-  const execPending = { kind: "ticket-execution" as const, feature, ticketId, phase, cwd, specsRoot };
+  const execPending = {
+    kind: "ticket-execution" as const,
+    executionRole: "worker" as const,
+    feature,
+    ticketId,
+    phase,
+    cwd,
+    specsRoot,
+    accumulatedUsage: undefined,
+  };
+  setPendingExecution(execPending);
+  await persistCheckpoint(execPending);
+  pi.sendUserMessage(message);
+}
+
+async function launchReviewerPhase(
+  pi: ExtensionAPI,
+  ctx: RoleRuntimeContext | undefined,
+  feature: string,
+  ticketId: string,
+  cwd: string,
+  specsRoot: string,
+  phase: "start" | "resume" | "retry",
+  accumulatedUsage: UsageTotals,
+  config?: Awaited<ReturnType<typeof loadConfig>>,
+) {
+  const resolvedConfig = config ?? (await loadConfig(cwd));
+  await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "reviewer");
+
+  const featureDir = path.join(specsRoot, feature);
+  const ticketPath = path.join(featureDir, "tickets", `${ticketId}.md`);
+  const memPath = featureMemoryPath(specsRoot, feature);
+  const memExists = await fsPromises.access(memPath).then(() => true).catch(() => false);
+  const reviewPath = reviewerNotesPath(specsRoot, feature, ticketId);
+
+  const message = [
+    buildReviewerPrompt(
+      feature,
+      ticketId,
+      featureDir,
+      ticketPath,
+      memExists ? memPath : undefined,
+      reviewPath,
+      resolvedConfig,
+    ),
+    "",
+    "## Subagent guidance",
+    ...buildSubagentGuidance(resolvedConfig, "execution"),
+  ].join("\n");
+
+  const execPending = {
+    kind: "ticket-execution" as const,
+    executionRole: "reviewer" as const,
+    feature,
+    ticketId,
+    phase,
+    cwd,
+    specsRoot,
+    accumulatedUsage,
+  };
+  setPendingExecution(execPending);
+  await persistCheckpoint(execPending);
+  pi.sendUserMessage(message);
+}
+
+async function launchChiefPhase(
+  pi: ExtensionAPI,
+  ctx: RoleRuntimeContext | undefined,
+  feature: string,
+  ticketId: string,
+  cwd: string,
+  specsRoot: string,
+  phase: "start" | "resume" | "retry",
+  accumulatedUsage: UsageTotals,
+  config?: Awaited<ReturnType<typeof loadConfig>>,
+) {
+  const resolvedConfig = config ?? (await loadConfig(cwd));
+  await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "chief");
+
+  const featureDir = path.join(specsRoot, feature);
+  const ticketPath = path.join(featureDir, "tickets", `${ticketId}.md`);
+  const memPath = featureMemoryPath(specsRoot, feature);
+  const reviewPath = reviewerNotesPath(specsRoot, feature, ticketId);
+  const contextPath = workerContextPath(specsRoot, feature, ticketId);
+
+  const message = [
+    buildChiefPrompt(feature, ticketId, featureDir, ticketPath, memPath, reviewPath, contextPath, resolvedConfig),
+    "",
+    "## Subagent guidance",
+    ...buildSubagentGuidance(resolvedConfig, "execution"),
+  ].join("\n");
+
+  const execPending = {
+    kind: "ticket-execution" as const,
+    executionRole: "chief" as const,
+    feature,
+    ticketId,
+    phase,
+    cwd,
+    specsRoot,
+    accumulatedUsage,
+  };
   setPendingExecution(execPending);
   await persistCheckpoint(execPending);
   pi.sendUserMessage(message);

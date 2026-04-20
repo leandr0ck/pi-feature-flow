@@ -42,6 +42,14 @@ async function settleSession(t: TestSession, ms = 100) {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function currentModelRef(t: TestSession): string | undefined {
+  const model = ((t.session as { model?: { provider?: string; id?: string } }).model)
+    ?? ((t.session.agent as { state?: { model?: { provider?: string; id?: string } } }).state?.model);
+  if (!model?.provider || !model?.id) return undefined;
+  return `${model.provider}/${model.id}`;
+}
+
+
 /** Seed a feature with spec + execution plan + tickets ready for execution */
 async function seedFeature(
   cwd: string,
@@ -158,6 +166,33 @@ describe("feature-ticket-flow integration", () => {
     expect(userMessages).toContain("## Approach Summary");
     expect(userMessages).toContain("## Implementation Notes");
     expect(userMessages).toContain("APPROVED, BLOCKED, or NEEDS-FIX");
+  });
+
+  it("switches to the configured planner model before sending /plan-feature work", async () => {
+    t = await createTestSession({
+      extensions: [EXTENSION_PATH],
+      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+    });
+
+    const { featureRoot } = await featurePaths(t.cwd, "planner-model");
+    await mkdir(path.join(featureRoot, "tickets"), { recursive: true });
+    await writeFile(
+      path.join(featureRoot, "01-master-spec.md"),
+      "# planner-model\n\n## Goal\nSwitch planner model.\n\n## Acceptance Criteria\n- It works.\n",
+      "utf8",
+    );
+    await mkdir(path.join(t.cwd, ".pi"), { recursive: true });
+    await writeFile(
+      path.join(t.cwd, ".pi", "feature-flow.json"),
+      JSON.stringify({ agents: { planner: { model: "openai/gpt-5" } } }),
+      "utf8",
+    );
+
+    patchHarnessCompatibility(t);
+    await t.run(when("/plan-feature planner-model", []));
+    await settleSession(t);
+
+    expect(currentModelRef(t)).toBe("openai/gpt-5");
   });
 
   it("includes TDD instructions in the planner prompt when TDD is enabled", async () => {
@@ -325,6 +360,71 @@ describe("feature-ticket-flow integration", () => {
     expect(userMessages).toContain("feature-execution");
   });
 
+  it("switches to the configured tester model before the tester phase", async () => {
+    t = await createTestSession({
+      extensions: [EXTENSION_PATH],
+      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+      mockUI: { select: 0 },
+    });
+
+    await seedFeature(t.cwd, "tester-model", [
+      { id: "STK-001", body: validTicket("STK-001") },
+    ]);
+    await mkdir(path.join(t.cwd, ".pi"), { recursive: true });
+    await writeFile(
+      path.join(t.cwd, ".pi", "feature-flow.json"),
+      JSON.stringify({ tdd: true, agents: { tester: { model: "openai/gpt-5-mini" } } }),
+      "utf8",
+    );
+
+    patchHarnessCompatibility(t);
+    await t.run(when("/next-ticket tester-model", []));
+    await settleSession(t);
+
+    expect(currentModelRef(t)).toBe("openai/gpt-5-mini");
+  });
+
+  it("switches from tester model to worker model on TDD auto-handoff", async () => {
+    t = await createTestSession({
+      extensions: [EXTENSION_PATH],
+      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+      mockUI: { select: 0 },
+    });
+
+    await seedFeature(t.cwd, "handoff-models", [
+      { id: "STK-001", body: validTicket("STK-001") },
+    ]);
+    await mkdir(path.join(t.cwd, ".pi"), { recursive: true });
+    await writeFile(
+      path.join(t.cwd, ".pi", "feature-flow.json"),
+      JSON.stringify({
+        tdd: true,
+        agents: {
+          tester: { model: "openai/gpt-5-mini" },
+          worker: { model: "openai/gpt-4.1-mini" },
+        },
+      }),
+      "utf8",
+    );
+
+    patchHarnessCompatibility(t);
+    await t.run(
+      when("/next-ticket handoff-models", [
+        says("APPROVED\nTester completed red phase."),
+      ]),
+    );
+    await settleSession(t, 200);
+
+    const userMessages = t.events.messages
+      .filter((m) => m.role === "user")
+      .map(messageText)
+      .join("\n\n");
+
+    expect(userMessages).toContain("Tester phase");
+    expect(userMessages).toContain("Worker phase");
+    expect(currentModelRef(t)).toBe("openai/gpt-4.1-mini");
+  });
+
   it("sends the tester prompt as first message when TDD is enabled", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
@@ -358,7 +458,47 @@ describe("feature-ticket-flow integration", () => {
     expect(userMessages).toContain("APPROVED (tests written and red)");
   });
 
-  it("sends worker + reviewer + chief prompt when TDD is disabled", async () => {
+  it("switches from worker model to reviewer model on explicit phase handoff", async () => {
+    t = await createTestSession({
+      extensions: [EXTENSION_PATH],
+      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+      mockUI: { select: 0 },
+    });
+
+    await seedFeature(t.cwd, "phase-models", [
+      { id: "STK-001", body: validTicket("STK-001") },
+    ]);
+    await mkdir(path.join(t.cwd, ".pi"), { recursive: true });
+    await writeFile(
+      path.join(t.cwd, ".pi", "feature-flow.json"),
+      JSON.stringify({
+        agents: {
+          worker: { model: "openai/gpt-4.1-mini" },
+          reviewer: { model: "openai/gpt-5-mini" },
+        },
+      }),
+      "utf8",
+    );
+
+    patchHarnessCompatibility(t);
+    await t.run(
+      when("/next-ticket phase-models", [
+        says("APPROVED\nWorker complete."),
+      ]),
+    );
+    await settleSession(t, 250);
+
+    const userMessages = t.events.messages
+      .filter((m) => m.role === "user")
+      .map(messageText)
+      .join("\n\n");
+
+    expect(userMessages).toContain("Worker phase");
+    expect(userMessages).toContain("Reviewer phase");
+    expect(currentModelRef(t)).toBe("openai/gpt-5-mini");
+  });
+
+  it("sends worker prompt first when TDD is disabled", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
@@ -379,10 +519,9 @@ describe("feature-ticket-flow integration", () => {
       .map(messageText)
       .join("\n\n");
 
-    expect(userMessages).toContain("Worker");
-    expect(userMessages).toContain("Reviewer");
-    expect(userMessages).toContain("Chief");
-    expect(userMessages).toContain("04-feature-memory.md");
+    expect(userMessages).toContain("Worker phase");
+    expect(userMessages).not.toContain("Reviewer phase");
+    expect(userMessages).not.toContain("Chief phase");
   });
 
   it("references the feature memory file in ticket prompt when it exists", async () => {
@@ -418,6 +557,40 @@ describe("feature-ticket-flow integration", () => {
     expect(userMessages).toContain("accumulated context from previous tickets");
   });
 
+  it("ignores worker/reviewer/tester artifact markdown files when loading the registry", async () => {
+    t = await createTestSession({
+      extensions: [EXTENSION_PATH],
+      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+      mockUI: { select: 0 },
+    });
+
+    await seedFeature(t.cwd, "artifact-ignore", [
+      { id: "STK-001", body: validTicket("STK-001") },
+      { id: "STK-002", body: validTicket("STK-002", "STK-001") },
+    ]);
+
+    const { ticketsRoot, specsRoot } = await featurePaths(t.cwd, "artifact-ignore");
+    await writeFile(
+      path.join(ticketsRoot, "STK-001-worker-context.md"),
+      "# Worker Context — STK-001\n",
+      "utf8",
+    );
+    await writeFile(
+      path.join(ticketsRoot, "STK-001-reviewer-notes.md"),
+      "# Reviewer Notes — STK-001\n",
+      "utf8",
+    );
+    await writeFile(
+      path.join(ticketsRoot, "STK-001-tester-notes.md"),
+      "# Tester Notes — STK-001\n",
+      "utf8",
+    );
+
+    const registry = await loadRegistry(specsRoot, "artifact-ignore");
+
+    expect(registry.tickets.map((ticket) => ticket.id)).toEqual(["STK-001", "STK-002"]);
+  });
+
   it("prefers needs_fix tickets over pending ones", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
@@ -446,5 +619,34 @@ describe("feature-ticket-flow integration", () => {
 
     expect(userMessages).toContain("STK-001");
     expect(userMessages).toContain("retry");
+  });
+
+  it("auto-advances from worker to reviewer with a separate reviewer prompt", async () => {
+    t = await createTestSession({
+      extensions: [EXTENSION_PATH],
+      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+      mockUI: { select: 0 },
+    });
+
+    await seedFeature(t.cwd, "phase-prompts", [
+      { id: "STK-001", body: validTicket("STK-001") },
+    ]);
+
+    patchHarnessCompatibility(t);
+    await t.run(
+      when("/next-ticket phase-prompts", [
+        says("APPROVED\nWorker done."),
+      ]),
+    );
+    await settleSession(t, 250);
+
+    const userMessages = t.events.messages
+      .filter((m) => m.role === "user")
+      .map(messageText)
+      .join("\n\n");
+
+    expect(userMessages).toContain("Worker phase");
+    expect(userMessages).toContain("Reviewer phase");
+    expect(userMessages).toContain("reviewer-notes");
   });
 });

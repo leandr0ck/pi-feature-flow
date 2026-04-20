@@ -115,7 +115,7 @@ export type FeatureValidationResult = {
 
 export type TicketCostEntry = {
   ticketId: string;
-  phase: "tester" | "worker";
+  phase: "tester" | "worker" | "reviewer" | "chief";
   runIndex: number;
   inputTokens: number;
   outputTokens: number;

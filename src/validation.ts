@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { FeatureValidationResult, TicketRecord, ValidationIssue } from "./types.js";
 import { validateExecutionPlanTemplate } from "./execution-plan-template.js";
-import { getTicket } from "./registry.js";
+import { getTicket, isPrimaryTicketMarkdown } from "./registry.js";
 import { validateTicketTemplate } from "./ticket-template.js";
 
 // Convention-based constants (not configurable)
@@ -66,7 +66,7 @@ export async function validateFeature(specsRoot: string, feature: string): Promi
   }
 
   // Discover ticket files
-  const ticketFiles = (await fs.readdir(ticketsDir)).filter((f) => f.endsWith(".md")).sort();
+  const ticketFiles = (await fs.readdir(ticketsDir)).filter(isPrimaryTicketMarkdown).sort();
   if (ticketFiles.length === 0) {
     issues.push({
       severity: "error",
