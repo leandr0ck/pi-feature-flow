@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **`allowExternalToolCalls` config flag**: new `execution.allowExternalToolCalls` flag disables bash command blocking (migrate, db:push, direct SQL) for projects that need it outside feature-flow sessions.
+- **Governance only when active**: tool-call governance now returns early when no feature-flow session is active, allowing normal agent usage without restrictions.
+- **Status bar phase + model + thinking**: status bar now shows `[ticket › PHASE › model:active-model | thinking:level]` including the real active model and current thinking level, refreshed immediately on handoff and on `model_select` events.
+- **Visible model switch feedback**: `applyRoleRuntimeConfig` now emits `notify` messages confirming which model is active per role (including thinking level), making model switches transparent.
+
+## [0.4.0] - 2026-04-21
+
 ### Changed
 - **Explicit runtime execution phases**: execution is now split into real `worker -> reviewer -> chief` phases instead of one combined worker/reviewer/chief turn.
 - **Runtime model switching per role**: `agents.<role>.model` and `agents.<role>.thinking` are now applied before each real phase launch, not just rendered into prompts.

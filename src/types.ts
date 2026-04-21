@@ -70,6 +70,8 @@ export type FeatureFlowExecutionConfig = {
   autoStartFirstTicketAfterPlanning?: boolean;
   /** Continue automatically to subsequent tickets after one ticket finishes. Default: true */
   autoAdvanceToNextTicket?: boolean;
+  /** When true, disables bash command blocking (allows migrate, db:push, direct SQL, etc. outside session). Default: false */
+  allowExternalToolCalls?: boolean;
 };
 
 export type FeatureFlowConfig = {

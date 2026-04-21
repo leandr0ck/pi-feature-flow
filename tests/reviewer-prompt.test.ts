@@ -11,7 +11,7 @@ describe("reviewer prompt", () => {
       "/specs/demo-feature/04-feature-memory.md",
       "/specs/demo-feature/tickets/STK-001-reviewer-notes.md",
       "/specs/demo-feature/tickets/STK-001-handoff-log.md",
-      {},
+      { specsRoot: "/specs" },
     );
 
     expect(prompt).toContain("perform a corrective code review when needed");

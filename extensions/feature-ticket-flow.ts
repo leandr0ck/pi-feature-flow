@@ -66,7 +66,32 @@ type CommandContext = ExtensionCommandContext & {
   };
 };
 
+function updateFeatureFlowStatus(
+  ctx: Pick<ExtensionContext, "ui" | "model">,
+  activeModelLabel?: string,
+  thinkingLevel?: string,
+) {
+  const pending = getPendingExecution();
+  if (!pending) {
+    ctx.ui.setStatus("feature-flow", "");
+    return;
+  }
+
+  ctx.ui.setStatus(
+    "feature-flow",
+    buildFeatureFlowStatusLabel(pending, activeModelLabel ?? formatModelLabel(ctx.model), thinkingLevel),
+  );
+}
+
 export default function featureTicketFlow(pi: ExtensionAPI) {
+  let activeModelLabel: string | undefined;
+
+  const refreshFeatureFlowStatus = (
+    ctx: Pick<ExtensionContext, "ui" | "model">,
+  ) => {
+    updateFeatureFlowStatus(ctx, activeModelLabel, pi.getThinkingLevel());
+  };
+
   // ── Inject ticket as mandatory system prompt context ─────────────────────────
   pi.on("before_agent_start", async (event, _ctx) => {
     const pending = getPendingExecution();
@@ -200,21 +225,14 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     return decision;
   });
 
-  // ── Show current phase in status bar ─────────────────────────────────────
+  // ── Show current phase + active model in status bar ──────────────────────
   pi.on("agent_start", async (_event, ctx) => {
-    const pending = getPendingExecution();
-    if (!pending || pending.kind === "feature-plan") {
-      ctx.ui.setStatus("feature-flow", "");
-      return;
-    }
-    const ticketId = (pending as any).ticketId as string;
-    const phase =
-      pending.kind === "ticket-tester"
-        ? "TESTER"
-        : pending.kind === "ticket-execution"
-          ? (pending as any).executionRole.toUpperCase()
-          : "?";
-    ctx.ui.setStatus("feature-flow", `[${ticketId} › ${phase}]`);
+    await refreshFeatureFlowStatus(ctx);
+  });
+
+  pi.on("model_select", async (event, ctx) => {
+    activeModelLabel = `${event.model.provider}/${event.model.id}`;
+    await refreshFeatureFlowStatus(ctx);
   });
 
   pi.on("agent_end", async (_statusEvent, ctx) => {
@@ -223,6 +241,8 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
 
   // ── Auto-advance on agent_end ──────────────────────────────────────────────
   pi.on("session_start", async (_event, ctx) => {
+    activeModelLabel = formatModelLabel(ctx.model);
+
     // Only attempt recovery on startup/reload — skip for new/fork sessions
     if (_event.reason !== "startup" && _event.reason !== "reload") return;
 
@@ -592,7 +612,9 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       const planPending = { kind: "feature-plan" as const, feature, cwd: ctx.cwd, specsRoot };
       setPendingExecution(planPending);
       await persistCheckpoint(planPending);
+      refreshFeatureFlowStatus(ctx);
       await applyRoleRuntimeConfig(pi, ctx, config, "planner");
+      refreshFeatureFlowStatus(ctx);
       pi.sendUserMessage(
         buildFeaturePlanningPrompt(feature, specsRoot, specPath, config, tddEnabled),
       );
@@ -903,6 +925,7 @@ type GovernanceContext = {
 };
 
 type RoleRuntimeContext = Pick<ExtensionContext, "modelRegistry" | "model" | "ui">;
+type FlowRole = "planner" | "tester" | "worker" | "reviewer" | "chief";
 type ExecutionRole = "worker" | "reviewer" | "chief";
 type UsageTotals = {
   inputTokens: number;
@@ -974,7 +997,16 @@ async function evaluateGovernanceForToolCall(
   event: { toolName: string; input: unknown },
   pending: ReturnType<typeof getPendingExecution>,
 ): Promise<{ block: true; reason: string } | undefined> {
+  // No active feature-flow execution => do not enforce governance.
+  if (!pending) return undefined;
+
   const governance = await buildGovernanceContext(pending);
+
+  // Allow external tool calls if configured for an active feature-flow session.
+  if (governance.cwd) {
+    const config = await loadConfig(governance.cwd);
+    if (config.execution?.allowExternalToolCalls) return undefined;
+  }
 
   if (event.toolName === "write" || event.toolName === "edit") {
     const filePath = ((event.input as any)?.path ?? "") as string;
@@ -1224,6 +1256,57 @@ function formatAllowedPaths(paths: Set<string>): string {
   return values.length > 0 ? values.join(", ") : "(none declared)";
 }
 
+function getPendingRole(pending: ReturnType<typeof getPendingExecution>): FlowRole | undefined {
+  if (!pending) return undefined;
+  if (pending.kind === "feature-plan") return "planner";
+  if (pending.kind === "ticket-tester") return "tester";
+  if (pending.kind === "ticket-execution") return pending.executionRole;
+  return undefined;
+}
+
+function getPendingPhaseLabel(pending: ReturnType<typeof getPendingExecution>): string {
+  if (!pending) return "";
+  if (pending.kind === "feature-plan") return "PLAN";
+  if (pending.kind === "ticket-tester") return "TESTER";
+  if (pending.kind === "ticket-execution") return pending.executionRole.toUpperCase();
+  return "UNKNOWN";
+}
+
+function formatModelLabel(model?: { provider?: string; id?: string } | null): string {
+  if (!model?.id) return "default";
+  return model.provider ? `${model.provider}/${model.id}` : model.id;
+}
+
+function getConfiguredModelLabel(
+  config: Awaited<ReturnType<typeof loadConfig>>,
+  role: FlowRole | undefined,
+  currentProvider?: string,
+): string | undefined {
+  if (!role) return undefined;
+  const raw = config.agents?.[role]?.model;
+  if (!raw) return undefined;
+  const parsed = parseConfiguredModelRef(raw, currentProvider);
+  return parsed ? `${parsed.provider}/${parsed.modelId}` : raw;
+}
+
+function buildFeatureFlowStatusLabel(
+  pending: ReturnType<typeof getPendingExecution>,
+  activeModelLabel: string,
+  thinkingLevel?: string,
+): string {
+  if (!pending) return "";
+
+  const phase = getPendingPhaseLabel(pending);
+  const thinkingSegment = thinkingLevel && thinkingLevel !== "off" ? ` | thinking:${thinkingLevel}` : "";
+  const modelSegment = `model:${activeModelLabel}${thinkingSegment}`;
+
+  if (pending.kind === "feature-plan") {
+    return `[${pending.feature} › ${phase} › ${modelSegment}]`;
+  }
+
+  return `[${pending.ticketId} › ${phase} › ${modelSegment}]`;
+}
+
 function parseConfiguredModelRef(
   raw: string | undefined,
   currentProvider: string | undefined,
@@ -1249,24 +1332,37 @@ async function applyRoleRuntimeConfig(
   pi: ExtensionAPI,
   ctx: RoleRuntimeContext | undefined,
   config: Awaited<ReturnType<typeof loadConfig>>,
-  role: "planner" | "tester" | "worker" | "reviewer" | "chief",
+  role: FlowRole,
 ): Promise<void> {
   if (!ctx) return;
 
   const roleConfig = config.agents?.[role];
   if (!roleConfig) return;
 
+  const thinkingLabel = roleConfig.thinking ? ` | thinking:${roleConfig.thinking}` : "";
+  const currentModelLabel = formatModelLabel(ctx.model);
+  const configuredModelLabel = getConfiguredModelLabel(config, role, ctx.model?.provider);
+
   const modelRef = parseConfiguredModelRef(roleConfig.model, ctx.model?.provider);
   if (modelRef) {
     const targetModel = ctx.modelRegistry.find(modelRef.provider, modelRef.modelId);
     if (!targetModel) {
-      ctx.ui.notify(`Configured ${role} model not found: ${roleConfig.model}`, "warning");
+      ctx.ui.notify(`feature-flow ${role}: configured model not found: ${roleConfig.model}`, "warning");
     } else if (!ctx.model || ctx.model.provider !== targetModel.provider || ctx.model.id !== targetModel.id) {
       const success = await pi.setModel(targetModel);
       if (!success) {
-        ctx.ui.notify(`Could not switch to ${role} model ${roleConfig.model} (missing API key?)`, "warning");
+        ctx.ui.notify(`feature-flow ${role}: could not switch to ${roleConfig.model} (missing API key?)`, "warning");
+      } else {
+        ctx.ui.notify(
+          `feature-flow ${role}: model switched ${currentModelLabel} → ${targetModel.provider}/${targetModel.id}${thinkingLabel}`,
+          "info",
+        );
       }
+    } else {
+      ctx.ui.notify(`feature-flow ${role}: using model ${configuredModelLabel ?? currentModelLabel}${thinkingLabel}`, "info");
     }
+  } else {
+    ctx.ui.notify(`feature-flow ${role}: using current model ${currentModelLabel}${thinkingLabel}`, "info");
   }
 
   if (roleConfig.thinking) {
@@ -1403,6 +1499,7 @@ async function launchTesterPhase(
   const testerPending = { kind: "ticket-tester" as const, feature, ticketId, phase, cwd, specsRoot };
   setPendingExecution(testerPending);
   await persistCheckpoint(testerPending);
+  if (ctx) updateFeatureFlowStatus(ctx, formatModelLabel(ctx.model), pi.getThinkingLevel());
   pi.sendUserMessage(message);
 }
 
@@ -1462,6 +1559,7 @@ async function launchWorkerChain(
   };
   setPendingExecution(execPending);
   await persistCheckpoint(execPending);
+  if (ctx) updateFeatureFlowStatus(ctx, formatModelLabel(ctx.model), pi.getThinkingLevel());
   pi.sendUserMessage(message);
 }
 
@@ -1514,6 +1612,7 @@ async function launchReviewerPhase(
   };
   setPendingExecution(execPending);
   await persistCheckpoint(execPending);
+  if (ctx) updateFeatureFlowStatus(ctx, formatModelLabel(ctx.model), pi.getThinkingLevel());
   pi.sendUserMessage(message);
 }
 
@@ -1557,5 +1656,6 @@ async function launchChiefPhase(
   };
   setPendingExecution(execPending);
   await persistCheckpoint(execPending);
+  if (ctx) updateFeatureFlowStatus(ctx, formatModelLabel(ctx.model), pi.getThinkingLevel());
   pi.sendUserMessage(message);
 }
