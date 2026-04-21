@@ -14,6 +14,7 @@ export type PendingExecution =
       kind: "ticket-tester";
       feature: string;
       ticketId: string;
+      phase: "start" | "resume" | "retry";
       cwd: string;
       specsRoot: string;
     }

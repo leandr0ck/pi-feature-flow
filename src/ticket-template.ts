@@ -8,6 +8,7 @@ export type TicketTemplateInput = {
 };
 
 export const REQUIRED_TICKET_SECTIONS = ["## Goal", "## Implementation Notes", "## Acceptance Criteria"] as const;
+export const REQUIRED_TICKET_METADATA_LABELS = ["Requires", "Files"] as const;
 
 export function renderTicketTemplate(input: TicketTemplateInput): string {
   const implementationNotes =
@@ -26,6 +27,7 @@ export function renderTicketTemplate(input: TicketTemplateInput): string {
     input.goal,
     "",
     `- Requires: ${input.requires.length > 0 ? input.requires.join(", ") : "none"}`,
+    "- Files: <repo-relative-path>, <repo-relative-path>",
     "",
     "## Implementation Notes",
     ...implementationNotes.map((note) => `- ${note}`),
@@ -47,6 +49,7 @@ export function buildTicketTemplateInstructions(_availableProfiles?: string[]): 
     "<one short paragraph describing the smallest verifiable outcome>",
     "",
     "- Requires: none | STK-001 | STK-001, STK-002",
+    "- Files: src/path/to/file.ts, tests/path/to/file.test.ts",
     "",
     "## Implementation Notes",
     "- <2-5 concrete implementation notes>",
@@ -72,8 +75,10 @@ export function validateTicketTemplate(content: string): string[] {
     }
   }
 
-  if (!/^-\s*Requires:\s*.+$/m.test(content)) {
-    issues.push("missing required metadata line - Requires:");
+  for (const label of REQUIRED_TICKET_METADATA_LABELS) {
+    if (!new RegExp(`^-\\s*${label}:\\s*.+$`, "m").test(content)) {
+      issues.push(`missing required metadata line - ${label}:`);
+    }
   }
 
   return issues;

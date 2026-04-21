@@ -1,11 +1,18 @@
 import path from "node:path";
 import { promises as fsPromises } from "node:fs";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { loadConfig, resolveSpecsRoot, resolveTddEnabled } from "../src/config.js";
+import {
+  loadConfig,
+  resolveSpecsRoot,
+  resolveTddEnabled,
+  shouldAutoAdvanceToNextTicket,
+  shouldAutoStartFirstTicketAfterPlanning,
+} from "../src/config.js";
 import {
   areDependenciesDone,
   featureCostPath,
   featureMemoryPath,
+  handoffLogPath,
   readFeatureCost,
   reviewerNotesPath,
   workerContextPath,
@@ -60,7 +67,161 @@ type CommandContext = ExtensionCommandContext & {
 };
 
 export default function featureTicketFlow(pi: ExtensionAPI) {
-  // ── Checkpoint recovery on session_start ──────────────────────────────────────
+  // ── Inject ticket as mandatory system prompt context ─────────────────────────
+  pi.on("before_agent_start", async (event, _ctx) => {
+    const pending = getPendingExecution();
+    if (!pending || pending.kind === "feature-plan") return;
+
+    const feature = (pending as any).feature as string;
+    const ticketId = (pending as any).ticketId as string;
+    const specsRoot = (pending as any).specsRoot as string;
+    const featureDir = path.join(specsRoot, feature);
+    const ticketPath = path.join(featureDir, "tickets", `${ticketId}.md`);
+
+    let ticketContent: string;
+    try {
+      ticketContent = await fsPromises.readFile(ticketPath, "utf8");
+    } catch {
+      return;
+    }
+
+    const phase =
+      pending.kind === "ticket-tester"
+        ? "TESTER"
+        : pending.kind === "ticket-execution"
+          ? (pending as any).executionRole.toUpperCase()
+          : "UNKNOWN";
+
+    const lines: string[] = [
+      "",
+      "================================================================",
+      `ACTIVE TICKET: ${ticketId} | PHASE: ${phase} | FEATURE: ${feature}`,
+      "================================================================",
+      "",
+      "The following ticket is your MANDATORY specification for this turn.",
+      "Every implementation note and acceptance criterion is REQUIRED.",
+      "Do NOT skip steps. Do NOT reinterpret. Do NOT add scope.",
+      "",
+      ticketContent,
+      "",
+    ];
+
+    lines.push(
+      "--- STRICT GOVERNANCE (HARD RULES) ---",
+      "The extension enforces these rules at tool-call time.",
+      "- You may only modify files explicitly allowed for the active phase and ticket.",
+      "- Never edit generated Drizzle SQL or drizzle/meta files manually.",
+      "- Never edit .env files, deployment/infra configs, CI workflow files, or lockfiles.",
+      "- Never run deploy/publish/git-push commands, reconcile scripts, direct SQL, or DB surgery.",
+      "- If the ticket's allowed files are insufficient, stop immediately and respond BLOCKED.",
+      "- Do not workaround a blocked tool by using bash, heredocs, sed, tee, node, or python to mutate protected files.",
+      "",
+    );
+
+    if (phase === "TESTER") {
+      lines.push(
+        "--- TESTER PROTOCOL (NON-NEGOTIABLE) ---",
+        "STEP 1. Read the Acceptance Criteria above.",
+        "STEP 2. Write the MINIMUM tests that prove each AC, following the project's test guidelines.",
+        "STEP 3. Do NOT run the tests. Execution belongs to the Worker.",
+        `STEP 4. Write ${testerNotesPath(specsRoot, feature, ticketId)} with the tests written and guidelines followed.`,
+        `STEP 5. Update ${handoffLogPath(specsRoot, feature, ticketId)} with the Tester section.`,
+        "STEP 6. Say APPROVED only if tests are written and documented.",
+        "DO NOT write implementation code. DO NOT run tests. DO NOT make anything pass.",
+        "",
+      );
+    } else if (phase === "WORKER") {
+      const notesPath = testerNotesPath(specsRoot, feature, ticketId);
+      let notesContent = "";
+      try {
+        notesContent = await fsPromises.readFile(notesPath, "utf8");
+      } catch {}
+
+      if (notesContent) {
+        lines.push(
+          "--- WORKER PROTOCOL (NON-NEGOTIABLE) ---",
+          "Tests have already been written by the Tester.",
+          "STEP 1. Read the tester notes. Understand which tests exist and what they cover.",
+          "STEP 2. Run the tests first and confirm the current failing state.",
+          "STEP 3. Implement the MINIMUM code that makes those exact tests pass. Nothing more.",
+          "STEP 4. Run the tests. Show GREEN output.",
+          "STEP 5. Run typecheck. Fix any errors.",
+          "STEP 6. Say APPROVED only if all tests pass and typecheck is clean.",
+          "DO NOT rewrite existing tests unless the ticket explicitly requires it. DO NOT add features beyond what tests require.",
+          "",
+        );
+      } else {
+        lines.push(
+          "--- WORKER PROTOCOL (NON-NEGOTIABLE, NO TESTER NOTES) ---",
+          "STEP 1. Write failing tests for each Acceptance Criterion. Run them. Show FAILURES.",
+          "STEP 2. Implement ONLY what is described in Implementation Notes, in order.",
+          "STEP 3. Run the tests. Show GREEN output.",
+          "STEP 4. Run typecheck. Fix any errors.",
+          "STEP 5. Say APPROVED only if all tests pass and typecheck is clean.",
+          "DO NOT combine steps. DO NOT skip the red phase. DO NOT invent shortcuts.",
+          "",
+        );
+      }
+    } else if (phase === "REVIEWER") {
+      lines.push(
+        "--- REVIEWER PROTOCOL (NON-NEGOTIABLE) ---",
+        "STEP 1. Read all Acceptance Criteria above.",
+        "STEP 2. Run the tests and inspect the implementation against the ticket.",
+        "STEP 3. If everything is correct, do not edit code. Just document the review.",
+        "STEP 4. If something is missing, you MAY edit tests and/or implementation within the ticket scope.",
+        "STEP 5. When behavior must change, add or adjust tests first whenever needed, then apply the minimum implementation fix.",
+        "STEP 6. Re-run tests after any edit. Run typecheck before approval.",
+        `STEP 7. Write ${reviewerNotesPath(specsRoot, feature, ticketId)} with findings and any edits made.`,
+        "STEP 8. Say APPROVED only if ALL ACs are met, tests pass, and typecheck is clean. Otherwise NEEDS-FIX.",
+        "",
+      );
+    } else if (phase === "CHIEF") {
+      lines.push(
+        "--- CHIEF PROTOCOL (NON-NEGOTIABLE) ---",
+        `STEP 1. Append a dated entry to ${featureMemoryPath(specsRoot, feature)} with decisions and patterns from this ticket.`,
+        `STEP 2. Write ${workerContextPath(specsRoot, feature, ticketId)} summarising status, files modified, and reviewer findings.`,
+        "STEP 3. Say APPROVED when both files are written.",
+        "",
+      );
+    }
+
+    lines.push("================================================================");
+
+    return {
+      systemPrompt: event.systemPrompt + lines.join("\n"),
+    };
+  });
+
+  // ── Strict governance for tool calls ──────────────────────────────────────
+  pi.on("tool_call", async (event, _ctx) => {
+    const pending = getPendingExecution();
+    const decision = await evaluateGovernanceForToolCall(event, pending);
+    if (!decision?.block) return;
+    return decision;
+  });
+
+  // ── Show current phase in status bar ─────────────────────────────────────
+  pi.on("agent_start", async (_event, ctx) => {
+    const pending = getPendingExecution();
+    if (!pending || pending.kind === "feature-plan") {
+      ctx.ui.setStatus("feature-flow", "");
+      return;
+    }
+    const ticketId = (pending as any).ticketId as string;
+    const phase =
+      pending.kind === "ticket-tester"
+        ? "TESTER"
+        : pending.kind === "ticket-execution"
+          ? (pending as any).executionRole.toUpperCase()
+          : "?";
+    ctx.ui.setStatus("feature-flow", `[${ticketId} › ${phase}]`);
+  });
+
+  pi.on("agent_end", async (_statusEvent, ctx) => {
+    ctx.ui.setStatus("feature-flow", "");
+  });
+
+  // ── Auto-advance on agent_end ──────────────────────────────────────────────
   pi.on("session_start", async (_event, ctx) => {
     // Only attempt recovery on startup/reload — skip for new/fork sessions
     if (_event.reason !== "startup" && _event.reason !== "reload") return;
@@ -106,17 +267,84 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     const pending = getPendingExecution();
     if (!pending) return;
 
-    setPendingExecution(undefined);
-    if ("specsRoot" in pending && "feature" in pending) {
-      await clearCheckpoint(
-        (pending as { specsRoot: string }).specsRoot,
-        (pending as { feature: string }).feature,
+    let parsed = parseOutcome(event.messages);
+    if (!parsed) {
+      emitInfo(
+        pi,
+        [
+          "Could not determine agent outcome.",
+          "Expected one of: APPROVED, BLOCKED, NEEDS-FIX.",
+          "Keeping checkpoint so the phase can be resumed safely.",
+        ].join("\n"),
       );
+      ctx.ui.notify("Could not determine agent outcome. Checkpoint preserved for resume.", "warning");
+      return;
     }
-    const parsed = parseOutcome(event.messages);
-    if (!parsed) return;
 
     try {
+      if (pending.kind === "ticket-tester" && parsed.status === "done") {
+        const notesPath = testerNotesPath(pending.specsRoot, pending.feature, pending.ticketId);
+        const logPath = handoffLogPath(pending.specsRoot, pending.feature, pending.ticketId);
+        const missing: string[] = [];
+        if (!(await fsPromises.access(notesPath).then(() => true).catch(() => false))) missing.push(notesPath);
+        if (!(await fsPromises.access(logPath).then(() => true).catch(() => false))) missing.push(logPath);
+        if (missing.length > 0) {
+          parsed = {
+            status: "needs_fix",
+            note: `APPROVED was reported but tester artifacts were not written: ${missing.join(", ")}`,
+          };
+        }
+      }
+
+      if (pending.kind === "ticket-execution" && parsed.status === "done") {
+        if (pending.executionRole === "worker") {
+          const logPath = handoffLogPath(pending.specsRoot, pending.feature, pending.ticketId);
+          if (!(await fsPromises.access(logPath).then(() => true).catch(() => false))) {
+            parsed = {
+              status: "needs_fix",
+              note: `APPROVED was reported but worker handoff log was not written: ${logPath}`,
+            };
+          }
+        }
+
+        if (pending.executionRole === "reviewer") {
+          const notesPath = reviewerNotesPath(pending.specsRoot, pending.feature, pending.ticketId);
+          const logPath = handoffLogPath(pending.specsRoot, pending.feature, pending.ticketId);
+          const missing: string[] = [];
+          if (!(await fsPromises.access(notesPath).then(() => true).catch(() => false))) missing.push(notesPath);
+          if (!(await fsPromises.access(logPath).then(() => true).catch(() => false))) missing.push(logPath);
+          if (missing.length > 0) {
+            parsed = {
+              status: "needs_fix",
+              note: `APPROVED was reported but reviewer artifacts were not written: ${missing.join(", ")}`,
+            };
+          }
+        }
+
+        if (pending.executionRole === "chief") {
+          const contextPath = workerContextPath(pending.specsRoot, pending.feature, pending.ticketId);
+          const memoryPath = featureMemoryPath(pending.specsRoot, pending.feature);
+          const logPath = handoffLogPath(pending.specsRoot, pending.feature, pending.ticketId);
+          const missing: string[] = [];
+          if (!(await fsPromises.access(contextPath).then(() => true).catch(() => false))) missing.push(contextPath);
+          if (!(await fsPromises.access(memoryPath).then(() => true).catch(() => false))) missing.push(memoryPath);
+          if (!(await fsPromises.access(logPath).then(() => true).catch(() => false))) missing.push(logPath);
+          if (missing.length > 0) {
+            parsed = {
+              status: "needs_fix",
+              note: `APPROVED was reported but chief artifacts were missing: ${missing.join(", ")}`,
+            };
+          }
+        }
+      }
+
+      setPendingExecution(undefined);
+      if ("specsRoot" in pending && "feature" in pending) {
+        await clearCheckpoint(
+          (pending as { specsRoot: string }).specsRoot,
+          (pending as { feature: string }).feature,
+        );
+      }
       if (pending.kind === "feature-plan") {
         const label = outcomeLabel(parsed.status);
         emitInfo(
@@ -144,8 +372,10 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
           return;
         }
 
-        // Load registry and kick off first ticket automatically
+        // Load registry and optionally kick off the first ticket automatically
         const registry = await loadRegistry(pending.specsRoot, pending.feature);
+        const planningConfig = await loadConfig(pending.cwd);
+        const autoStartFirstTicket = shouldAutoStartFirstTicketAfterPlanning(planningConfig);
         emitInfo(
           pi,
           [
@@ -153,16 +383,22 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
             "",
             `Tickets registered: ${registry.tickets.length}`,
             "",
-            "Starting implementation automatically ticket by ticket.",
+            autoStartFirstTicket
+              ? "Starting the first ticket automatically, then following execution policy."
+              : "Automatic ticket start is disabled by config.",
             "",
             renderStatus(registry),
           ].join("\n"),
         );
         ctx.ui.notify(
-          `Feature ${pending.feature} planned. ${registry.tickets.length} tickets. Starting implementation...`,
+          autoStartFirstTicket
+            ? `Feature ${pending.feature} planned. ${registry.tickets.length} tickets. Starting first ticket...`
+            : `Feature ${pending.feature} planned. ${registry.tickets.length} tickets. Waiting for manual start.`,
           "info",
         );
-        await startPreparedNextTicket(pi, pending.feature, pending.cwd, pending.specsRoot, ctx);
+        if (autoStartFirstTicket) {
+          await startPreparedNextTicket(pi, pending.feature, pending.cwd, pending.specsRoot, ctx);
+        }
         return;
       }
 
@@ -197,7 +433,15 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
 
         // Tester approved — hand off to worker chain
         ctx.ui.notify(`Tester done for ${pending.ticketId}. Starting worker...`, "info");
-        await launchWorkerChain(pi, ctx, pending.feature, pending.ticketId, pending.cwd, pending.specsRoot, "start");
+        await launchWorkerChain(
+          pi,
+          ctx,
+          pending.feature,
+          pending.ticketId,
+          pending.cwd,
+          pending.specsRoot,
+          pending.phase,
+        );
         return;
       }
 
@@ -268,7 +512,19 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       );
 
       if (parsed.status === "done") {
-        await startPreparedNextTicket(pi, pending.feature, pending.cwd, pending.specsRoot, ctx);
+        const executionConfig = await loadConfig(pending.cwd);
+        if (shouldAutoAdvanceToNextTicket(executionConfig)) {
+          await startPreparedNextTicket(pi, pending.feature, pending.cwd, pending.specsRoot, ctx);
+        } else {
+          emitInfo(
+            pi,
+            `Stopping after ${pending.ticketId} by config. Automatic advance to the next ticket is disabled.`,
+          );
+          ctx.ui.notify(
+            `Ticket ${pending.ticketId} finished. Auto-advance is disabled; stopping here.`,
+            "info",
+          );
+        }
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
@@ -629,6 +885,23 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
+type GovernancePhase = "PLANNER" | "TESTER" | "WORKER" | "REVIEWER" | "CHIEF" | "UNKNOWN";
+
+type GovernanceContext = {
+  phase: GovernancePhase;
+  cwd: string;
+  feature?: string;
+  ticketId?: string;
+  specsRoot?: string;
+  allowedExactPaths: Set<string>;
+  allowedDirectories: Set<string>;
+  testerNotesPath?: string;
+  reviewerNotesPath?: string;
+  workerContextPath?: string;
+  handoffLogPath?: string;
+  featureMemoryPath?: string;
+};
+
 type RoleRuntimeContext = Pick<ExtensionContext, "modelRegistry" | "model" | "ui">;
 type ExecutionRole = "worker" | "reviewer" | "chief";
 type UsageTotals = {
@@ -639,6 +912,54 @@ type UsageTotals = {
   costUsd: number;
 };
 
+const PROTECTED_WRITE_PATH_PATTERNS = [
+  /^drizzle\/.+\.sql$/i,
+  /^drizzle\/meta(?:\/|$)/i,
+  /^\.github\/workflows(?:\/|$)/i,
+  /^\.circleci(?:\/|$)/i,
+  /^infra(?:\/|$)/i,
+  /^terraform(?:\/|$)/i,
+  /^helm(?:\/|$)/i,
+  /^\.changeset(?:\/|$)/i,
+  /^scripts\/deploy(?:\/|$|-|\.)/i,
+  /^deploy(?:\/|$)/i,
+];
+
+const PROTECTED_WRITE_BASENAMES = new Set([
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "bun.lock",
+  "bun.lockb",
+  "wrangler.toml",
+  "wrangler.json",
+  "wrangler.jsonc",
+  "vercel.json",
+  "netlify.toml",
+  "fly.toml",
+  "railway.json",
+  "docker-compose.yml",
+  "docker-compose.yaml",
+  "dockerfile",
+  "procfile",
+  "app.yaml",
+]);
+
+const FORBIDDEN_BASH_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+  {
+    pattern: /\b(?:bun|npm|pnpm|yarn)\s+run\s+deploy\b|\bwrangler\s+deploy\b|\bvercel\b|\bnetlify\s+deploy\b|\bfly\s+deploy\b|\brailway\s+up\b|\bterraform\s+apply\b|\bpulumi\s+up\b|\bkubectl\s+apply\b|\bgh\s+workflow\s+run\b|\bdocker\s+push\b/i,
+    reason: "Deploy/publish/infra execution is forbidden inside feature-flow phases.",
+  },
+  {
+    pattern: /\bnpm\s+publish\b|\bpnpm\s+publish\b|\byarn\s+publish\b|\bgit\s+push\b|\bgit\s+tag\b|\bgh\s+pr\s+create\b/i,
+    reason: "Publishing and remote git operations are forbidden inside feature-flow phases.",
+  },
+  {
+    pattern: /db:reconcile|db-reconcile|INSERT\s+INTO\s+drizzle\.__drizzle_migrations|ALTER\s+TABLE|DROP\s+TABLE|CREATE\s+TABLE|\bpsql\b|drizzle-kit\s+push\b/i,
+    reason: "Direct database surgery is forbidden. Use schema.ts + Drizzle generate/migrate only.",
+  },
+];
+
 function sumUsage(base?: Partial<UsageTotals>, next?: Partial<UsageTotals>): UsageTotals {
   return {
     inputTokens: (base?.inputTokens ?? 0) + (next?.inputTokens ?? 0),
@@ -647,6 +968,260 @@ function sumUsage(base?: Partial<UsageTotals>, next?: Partial<UsageTotals>): Usa
     cacheWriteTokens: (base?.cacheWriteTokens ?? 0) + (next?.cacheWriteTokens ?? 0),
     costUsd: (base?.costUsd ?? 0) + (next?.costUsd ?? 0),
   };
+}
+
+async function evaluateGovernanceForToolCall(
+  event: { toolName: string; input: unknown },
+  pending: ReturnType<typeof getPendingExecution>,
+): Promise<{ block: true; reason: string } | undefined> {
+  const governance = await buildGovernanceContext(pending);
+
+  if (event.toolName === "write" || event.toolName === "edit") {
+    const filePath = ((event.input as any)?.path ?? "") as string;
+    const resolvedPath = resolveCandidatePath(governance.cwd, filePath);
+    const protectedReason = getProtectedPathReason(governance.cwd, resolvedPath);
+    if (protectedReason) {
+      return {
+        block: true,
+        reason: `${governance.phase} GOVERNANCE VIOLATION: ${protectedReason} Path: '${filePath}'. Respond BLOCKED instead of working around this restriction.`,
+      };
+    }
+
+    const phaseDecision = getPhaseWriteDecision(governance, resolvedPath, filePath);
+    if (phaseDecision) return phaseDecision;
+  }
+
+  if (event.toolName === "bash") {
+    const command = String(((event.input as any)?.command ?? "") as string);
+    const bashDecision = getForbiddenBashDecision(command, governance.phase);
+    if (bashDecision) {
+      return {
+        block: true,
+        reason: `${governance.phase} GOVERNANCE VIOLATION: ${bashDecision} Respond BLOCKED and explain the real constraint.`,
+      };
+    }
+  }
+
+  return undefined;
+}
+
+async function buildGovernanceContext(
+  pending: ReturnType<typeof getPendingExecution>,
+): Promise<GovernanceContext> {
+  if (!pending) {
+    return {
+      phase: "UNKNOWN",
+      cwd: process.cwd(),
+      allowedExactPaths: new Set(),
+      allowedDirectories: new Set(),
+    };
+  }
+
+  const phase: GovernancePhase =
+    pending.kind === "ticket-tester"
+      ? "TESTER"
+      : pending.kind === "ticket-execution"
+        ? pending.executionRole.toUpperCase() as GovernancePhase
+        : pending.kind === "feature-plan"
+          ? "PLANNER"
+          : "UNKNOWN";
+
+  const context: GovernanceContext = {
+    phase,
+    cwd: pending.cwd,
+    feature: "feature" in pending ? pending.feature : undefined,
+    ticketId: "ticketId" in pending ? pending.ticketId : undefined,
+    specsRoot: "specsRoot" in pending ? pending.specsRoot : undefined,
+    allowedExactPaths: new Set(),
+    allowedDirectories: new Set(),
+  };
+
+  if (!context.feature || !context.specsRoot || !context.ticketId) return context;
+
+  context.testerNotesPath = testerNotesPath(context.specsRoot, context.feature, context.ticketId);
+  context.reviewerNotesPath = reviewerNotesPath(context.specsRoot, context.feature, context.ticketId);
+  context.workerContextPath = workerContextPath(context.specsRoot, context.feature, context.ticketId);
+  context.handoffLogPath = handoffLogPath(context.specsRoot, context.feature, context.ticketId);
+  context.featureMemoryPath = featureMemoryPath(context.specsRoot, context.feature);
+
+  const ticketPath = path.join(context.specsRoot, context.feature, "tickets", `${context.ticketId}.md`);
+  const ticketContent = await fsPromises.readFile(ticketPath, "utf8").catch(() => "");
+  const allowedTargets = extractAllowedTargetsFromTicket(ticketContent, context.cwd);
+  for (const target of allowedTargets.files) context.allowedExactPaths.add(target);
+  for (const target of allowedTargets.directories) context.allowedDirectories.add(target);
+
+  return context;
+}
+
+function extractAllowedTargetsFromTicket(
+  content: string,
+  cwd: string,
+): { files: Set<string>; directories: Set<string> } {
+  const files = new Set<string>();
+  const directories = new Set<string>();
+  if (!content.trim()) return { files, directories };
+
+  const metadataLines = [...content.matchAll(/^\s*-\s*Files:\s*(.+)$/gim)].map((m) => m[1]!.trim());
+  const rawTargets = metadataLines.length > 0
+    ? metadataLines.flatMap((line) => line.split(",").map((part) => part.trim()).filter(Boolean))
+    : extractPathMentions(content);
+
+  for (const rawTarget of rawTargets) {
+    const normalized = rawTarget.replace(/^`|`$/g, "").trim();
+    if (!normalized || normalized === "none" || normalized.startsWith("<")) continue;
+    const resolved = resolveCandidatePath(cwd, normalized);
+    if (normalized.endsWith("/")) {
+      directories.add(stripTrailingSlash(resolved));
+      continue;
+    }
+    if (looksLikeDirectory(normalized)) {
+      directories.add(stripTrailingSlash(resolved));
+      continue;
+    }
+    files.add(resolved);
+  }
+
+  return { files, directories };
+}
+
+function extractPathMentions(content: string): string[] {
+  const matches = new Set<string>();
+  const regex = /`([^`\n]+(?:\/[A-Za-z0-9._-]+)+[^`\n]*)`|(?:^|[\s(])((?:\.?\.?\/)?[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+)/gm;
+  for (const match of content.matchAll(regex)) {
+    const candidate = (match[1] || match[2] || "").trim();
+    if (!candidate || !candidate.includes("/")) continue;
+    matches.add(candidate);
+  }
+  return [...matches];
+}
+
+function getPhaseWriteDecision(
+  governance: GovernanceContext,
+  resolvedPath: string,
+  rawPath: string,
+): { block: true; reason: string } | undefined {
+  if (governance.phase === "UNKNOWN" || governance.phase === "PLANNER") return undefined;
+
+  const exact = governance.allowedExactPaths.has(resolvedPath);
+  const inAllowedDir = [...governance.allowedDirectories].some((dir) => isWithinPath(resolvedPath, dir));
+
+  if (governance.phase === "TESTER") {
+    if (resolvedPath === governance.testerNotesPath || resolvedPath === governance.handoffLogPath || isTestLikePath(resolvedPath)) return undefined;
+    return {
+      block: true,
+      reason:
+        `TESTER PHASE VIOLATION: Cannot write '${rawPath}'. During TESTER you may only write test files, ${path.basename(governance.testerNotesPath ?? "tester-notes")}, and ${path.basename(governance.handoffLogPath ?? "handoff-log")}.`,
+    };
+  }
+
+  if (governance.phase === "REVIEWER") {
+    if (
+      resolvedPath === governance.reviewerNotesPath
+      || resolvedPath === governance.handoffLogPath
+      || isTestLikePath(resolvedPath)
+      || exact
+      || inAllowedDir
+    ) return undefined;
+    return {
+      block: true,
+      reason:
+        `REVIEWER PHASE VIOLATION: Reviewer may only modify ticket-scoped implementation files, test files, reviewer notes at '${governance.reviewerNotesPath}', and the handoff log at '${governance.handoffLogPath}'. Allowed exact paths: ${formatAllowedPaths(governance.allowedExactPaths)}${governance.allowedDirectories.size > 0 ? ` | Allowed directories: ${formatAllowedPaths(governance.allowedDirectories)}` : ""}`,
+    };
+  }
+
+  if (governance.phase === "CHIEF") {
+    if (resolvedPath === governance.featureMemoryPath || resolvedPath === governance.workerContextPath || resolvedPath === governance.handoffLogPath) return undefined;
+    return {
+      block: true,
+      reason:
+        `CHIEF PHASE VIOLATION: Chief may only write '${governance.featureMemoryPath}', '${governance.workerContextPath}', and '${governance.handoffLogPath}'.`,
+    };
+  }
+
+  if (governance.phase === "WORKER") {
+    if (resolvedPath === governance.handoffLogPath || exact || inAllowedDir) return undefined;
+    return {
+      block: true,
+      reason:
+        `WORKER PHASE VIOLATION: '${rawPath}' is outside the ticket-allowed file scope. Only paths explicitly listed in '- Files:' may be modified, plus the handoff log '${governance.handoffLogPath}'. Allowed exact paths: ${formatAllowedPaths(governance.allowedExactPaths)}${governance.allowedDirectories.size > 0 ? ` | Allowed directories: ${formatAllowedPaths(governance.allowedDirectories)}` : ""}`,
+    };
+  }
+
+  return undefined;
+}
+
+function getForbiddenBashDecision(command: string, phase?: GovernancePhase): string | undefined {
+  for (const entry of FORBIDDEN_BASH_PATTERNS) {
+    if (entry.pattern.test(command)) return entry.reason;
+  }
+
+  if (phase === "TESTER" && isTestExecutionCommand(command)) {
+    return "Tester may not execute tests. The tester role is limited to reading the ticket, writing test files, and documenting the test plan.";
+  }
+
+  const lower = command.toLowerCase();
+  const mutatesFile = />|>>|\btee\b|\bsed\b[^\n]*\s-i\b|\bperl\b[^\n]*\s-pi\b|\bcp\b|\bmv\b|\brm\b|\btouch\b|\btruncate\b/.test(lower);
+
+  for (const protectedHint of [".env", "drizzle/", "drizzle\\", ".github/workflows", "wrangler.", "vercel.json", "netlify.toml", "fly.toml", "railway.json", "docker-compose", "terraform", "helm/"]) {
+    if (lower.includes(protectedHint.toLowerCase())) {
+      return `Bash command attempts to mutate a protected path (${protectedHint}).`;
+    }
+  }
+
+  return undefined;
+}
+
+function getProtectedPathReason(cwd: string, resolvedPath: string): string | undefined {
+  const rel = toPosixRelative(cwd, resolvedPath);
+  const base = path.basename(resolvedPath).toLowerCase();
+  if (base.startsWith(".env")) return "Environment files are protected and may not be edited by the agent.";
+  if (PROTECTED_WRITE_BASENAMES.has(base)) return `Protected deployment/runtime file '${path.basename(resolvedPath)}' may not be edited by the agent.`;
+  if (PROTECTED_WRITE_PATH_PATTERNS.some((pattern) => pattern.test(rel))) {
+    if (rel.startsWith("drizzle/")) {
+      return "Generated Drizzle artifacts are protected. Edit schema.ts only and use db:generate/db:migrate.";
+    }
+    return `Protected path '${rel}' may not be edited by the agent.`;
+  }
+  if (/\.tf(?:vars)?$/i.test(base)) return "Terraform files are protected and may not be edited by the agent.";
+  return undefined;
+}
+
+function resolveCandidatePath(cwd: string, rawPath: string): string {
+  const clean = rawPath.replace(/^@/, "").trim();
+  if (!clean) return path.resolve(cwd);
+  return path.resolve(cwd, clean);
+}
+
+function looksLikeDirectory(target: string): boolean {
+  const tail = target.split("/").pop() ?? target;
+  return !tail.includes(".");
+}
+
+function stripTrailingSlash(value: string): string {
+  return value.replace(/[\\/]+$/, "");
+}
+
+function toPosixRelative(root: string, target: string): string {
+  const rel = path.relative(root, target);
+  return rel.split(path.sep).join("/");
+}
+
+function isWithinPath(target: string, root: string): boolean {
+  const rel = path.relative(root, target);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+function isTestLikePath(filePath: string): boolean {
+  return /(?:^|\/)(?:tests?|__tests__)\//.test(filePath) || /\.(?:test|spec)\.[^.]+$/i.test(filePath);
+}
+
+function isTestExecutionCommand(command: string): boolean {
+  return /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|\bvitest\b|\bjest\b|\bplaywright\s+test\b|\bpytest\b|\bgo\s+test\b|\bcargo\s+test\b|\bphpunit\b|\brspec\b/i.test(command);
+}
+
+function formatAllowedPaths(paths: Set<string>): string {
+  const values = [...paths].map((p) => p.split(path.sep).join("/")).sort();
+  return values.length > 0 ? values.join(", ") : "(none declared)";
 }
 
 function parseConfiguredModelRef(
@@ -794,7 +1369,7 @@ async function launchTicketExecution(
   const tddEnabled = resolveTddEnabled(config);
 
   if (tddEnabled) {
-    await launchTesterPhase(pi, ctx, feature, ticketId, cwd, specsRoot, config);
+    await launchTesterPhase(pi, ctx, feature, ticketId, cwd, specsRoot, phase, config);
   } else {
     await launchWorkerChain(pi, ctx, feature, ticketId, cwd, specsRoot, phase, config);
   }
@@ -808,6 +1383,7 @@ async function launchTesterPhase(
   ticketId: string,
   cwd: string,
   specsRoot: string,
+  phase: "start" | "resume" | "retry",
   config?: Awaited<ReturnType<typeof loadConfig>>,
 ) {
   const resolvedConfig = config ?? (await loadConfig(cwd));
@@ -815,15 +1391,16 @@ async function launchTesterPhase(
   const featureDir = path.join(specsRoot, feature);
   const ticketPath = path.join(featureDir, "tickets", `${ticketId}.md`);
   const notesPath = testerNotesPath(specsRoot, feature, ticketId);
+  const logPath = handoffLogPath(specsRoot, feature, ticketId);
 
   const message = [
-    buildTesterPrompt(feature, ticketId, featureDir, ticketPath, notesPath, resolvedConfig),
+    buildTesterPrompt(feature, ticketId, featureDir, ticketPath, notesPath, logPath, resolvedConfig),
     "",
     "## Subagent guidance",
     ...buildSubagentGuidance(resolvedConfig, "execution"),
   ].join("\n");
 
-  const testerPending = { kind: "ticket-tester" as const, feature, ticketId, cwd, specsRoot };
+  const testerPending = { kind: "ticket-tester" as const, feature, ticketId, phase, cwd, specsRoot };
   setPendingExecution(testerPending);
   await persistCheckpoint(testerPending);
   pi.sendUserMessage(message);
@@ -853,6 +1430,7 @@ async function launchWorkerChain(
 
   const ctxPath = workerContextPath(specsRoot, feature, ticketId);
   const ctxExists = await fsPromises.access(ctxPath).then(() => true).catch(() => false);
+  const logPath = handoffLogPath(specsRoot, feature, ticketId);
 
   const message = [
     buildWorkerPrompt(
@@ -863,6 +1441,7 @@ async function launchWorkerChain(
       memExists ? memPath : undefined,
       notesExist ? notesPath : undefined,
       ctxExists && phase === "retry" ? ctxPath : undefined,
+      logPath,
       resolvedConfig,
       phase,
     ),
@@ -905,6 +1484,7 @@ async function launchReviewerPhase(
   const memPath = featureMemoryPath(specsRoot, feature);
   const memExists = await fsPromises.access(memPath).then(() => true).catch(() => false);
   const reviewPath = reviewerNotesPath(specsRoot, feature, ticketId);
+  const logPath = handoffLogPath(specsRoot, feature, ticketId);
 
   const message = [
     buildReviewerPrompt(
@@ -914,6 +1494,7 @@ async function launchReviewerPhase(
       ticketPath,
       memExists ? memPath : undefined,
       reviewPath,
+      logPath,
       resolvedConfig,
     ),
     "",
@@ -955,9 +1536,10 @@ async function launchChiefPhase(
   const memPath = featureMemoryPath(specsRoot, feature);
   const reviewPath = reviewerNotesPath(specsRoot, feature, ticketId);
   const contextPath = workerContextPath(specsRoot, feature, ticketId);
+  const logPath = handoffLogPath(specsRoot, feature, ticketId);
 
   const message = [
-    buildChiefPrompt(feature, ticketId, featureDir, ticketPath, memPath, reviewPath, contextPath, resolvedConfig),
+    buildChiefPrompt(feature, ticketId, featureDir, ticketPath, memPath, reviewPath, contextPath, logPath, resolvedConfig),
     "",
     "## Subagent guidance",
     ...buildSubagentGuidance(resolvedConfig, "execution"),

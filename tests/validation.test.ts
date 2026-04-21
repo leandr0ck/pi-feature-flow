@@ -38,6 +38,7 @@ function validTicket(id: string, requires = "none"): string {
     "Do something.",
     "",
     `- Requires: ${requires}`,
+    "- Files: src/example.ts, tests/example.test.ts",
     "",
     "## Implementation Notes",
     "- Keep it minimal.",
@@ -177,6 +178,7 @@ describe("validateFeature", () => {
     await writeFile(path.join(ticketsDir, "STK-001-worker-context.md"), "# Worker Context — STK-001\n", "utf8");
     await writeFile(path.join(ticketsDir, "STK-001-reviewer-notes.md"), "# Reviewer Notes — STK-001\n", "utf8");
     await writeFile(path.join(ticketsDir, "STK-001-tester-notes.md"), "# Tester Notes — STK-001\n", "utf8");
+    await writeFile(path.join(ticketsDir, "STK-001-handoff-log.md"), "# Handoff Log — STK-001\n", "utf8");
 
     const result = await validateFeature(specsRoot, "artifact-validation");
 
@@ -184,6 +186,7 @@ describe("validateFeature", () => {
     expect(result.issues.some((i) => i.ticketId?.includes("worker-context"))).toBe(false);
     expect(result.issues.some((i) => i.ticketId?.includes("reviewer-notes"))).toBe(false);
     expect(result.issues.some((i) => i.ticketId?.includes("tester-notes"))).toBe(false);
+    expect(result.issues.some((i) => i.ticketId?.includes("handoff-log"))).toBe(false);
   });
 
   it("errors when only artifact markdown files exist in the tickets directory", async () => {
@@ -196,6 +199,7 @@ describe("validateFeature", () => {
     await writeFile(path.join(featureDir, "02-execution-plan.md"), validPlan("artifacts-only"), "utf8");
     await writeFile(path.join(ticketsDir, "STK-001-worker-context.md"), "# Worker Context — STK-001\n", "utf8");
     await writeFile(path.join(ticketsDir, "STK-001-reviewer-notes.md"), "# Reviewer Notes — STK-001\n", "utf8");
+    await writeFile(path.join(ticketsDir, "STK-001-handoff-log.md"), "# Handoff Log — STK-001\n", "utf8");
 
     const result = await validateFeature(specsRoot, "artifacts-only");
 

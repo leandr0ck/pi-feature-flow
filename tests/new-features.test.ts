@@ -37,6 +37,7 @@ describe("checkpoint persistence", () => {
       kind: "ticket-tester" as const,
       feature,
       ticketId: "STK-001",
+      phase: "retry" as const,
       cwd: specsRoot,
       specsRoot,
     };
@@ -55,6 +56,7 @@ describe("checkpoint persistence", () => {
 
     const pending = {
       kind: "ticket-execution" as const,
+      executionRole: "worker" as const,
       feature,
       ticketId: "STK-002",
       phase: "retry" as const,
@@ -105,12 +107,14 @@ describe("checkpoint persistence", () => {
       kind: "ticket-tester" as const,
       feature,
       ticketId: "STK-001",
+      phase: "start" as const,
       cwd: specsRoot,
       specsRoot,
     });
 
     await persistCheckpoint({
       kind: "ticket-execution" as const,
+      executionRole: "worker" as const,
       feature,
       ticketId: "STK-001",
       phase: "start" as const,
@@ -278,12 +282,14 @@ describe("retry context in prompts", () => {
       undefined,
       undefined,
       "/tmp/test/tickets/STK-001-worker-context.md",
+      "/tmp/test/tickets/STK-001-handoff-log.md",
       { specsRoot: "./docs/technical-specs" },
       "retry",
     );
     expect(prompt).toContain("worker-context");
+    expect(prompt).toContain("handoff-log");
     expect(prompt).toContain("RETRY");
-    expect(prompt).toContain("read this first");
+    expect(prompt).toContain("read first");
   });
 
   it("does not include workerContextPath reference when phase is start", () => {
@@ -295,6 +301,7 @@ describe("retry context in prompts", () => {
       undefined,
       undefined,
       "/tmp/test/tickets/STK-001-worker-context.md",
+      "/tmp/test/tickets/STK-001-handoff-log.md",
       { specsRoot: "./docs/technical-specs" },
       "start",
     );

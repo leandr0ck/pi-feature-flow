@@ -2,9 +2,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createTestSession, when, says, type TestSession } from "@marcfargas/pi-test-harness";
+import { createTestSession, when, type TestSession } from "@marcfargas/pi-test-harness";
 import { loadConfig, resolveSpecsRoot } from "../src/config.js";
-import { loadRegistry, saveRegistry, featureMemoryPath } from "../src/registry.js";
+import { loadRegistry, saveRegistry, featureMemoryPath, workerContextPath } from "../src/registry.js";
+import { loadCheckpoint } from "../src/feature-flow/state.js";
 
 process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || "test-key";
 
@@ -100,6 +101,7 @@ function validTicket(id: string, requires = "none"): string {
     "Implement a minimal test slice.",
     "",
     `- Requires: ${requires}`,
+    "- Files: src/example.ts, tests/example.test.ts",
     "",
     "## Implementation Notes",
     "- Keep the change minimal.",
@@ -384,7 +386,7 @@ describe("feature-ticket-flow integration", () => {
     expect(currentModelRef(t)).toBe("openai/gpt-5-mini");
   });
 
-  it("switches from tester model to worker model on TDD auto-handoff", async () => {
+  it("records a tester checkpoint with phase=start when TDD is enabled", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
@@ -408,21 +410,15 @@ describe("feature-ticket-flow integration", () => {
     );
 
     patchHarnessCompatibility(t);
-    await t.run(
-      when("/next-ticket handoff-models", [
-        says("APPROVED\nTester completed red phase."),
-      ]),
-    );
+    await t.run(when("/next-ticket handoff-models", []));
     await settleSession(t, 200);
 
-    const userMessages = t.events.messages
-      .filter((m) => m.role === "user")
-      .map(messageText)
-      .join("\n\n");
+    const { specsRoot } = await featurePaths(t.cwd, "handoff-models");
+    const checkpoint = await loadCheckpoint(specsRoot, "handoff-models");
 
-    expect(userMessages).toContain("Tester phase");
-    expect(userMessages).toContain("Worker phase");
-    expect(currentModelRef(t)).toBe("openai/gpt-4.1-mini");
+    expect(checkpoint?.kind).toBe("ticket-tester");
+    expect(checkpoint && "phase" in checkpoint ? checkpoint.phase : undefined).toBe("start");
+    expect(currentModelRef(t)).toBe("openai/gpt-5-mini");
   });
 
   it("sends the tester prompt as first message when TDD is enabled", async () => {
@@ -453,12 +449,54 @@ describe("feature-ticket-flow integration", () => {
 
     // First message should be the tester phase prompt
     expect(userMessages).toContain("Tester phase");
-    expect(userMessages).toContain("red phase");
+    expect(userMessages).toContain("TEST AUTHORING ONLY");
     expect(userMessages).toContain("tester-notes");
-    expect(userMessages).toContain("APPROVED (tests written and red)");
+    expect(userMessages).toContain("handoff log");
+    expect(userMessages).toContain("Do NOT run the test suite");
   });
 
-  it("switches from worker model to reviewer model on explicit phase handoff", async () => {
+  it("preserves retry phase in the tester checkpoint when TDD is enabled", async () => {
+    t = await createTestSession({
+      extensions: [EXTENSION_PATH],
+      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+      mockUI: { select: 0 },
+    });
+
+    await seedFeature(t.cwd, "retry-tdd-handoff", [
+      { id: "STK-001", body: validTicket("STK-001") },
+      { id: "STK-002", body: validTicket("STK-002") },
+    ]);
+    await mkdir(path.join(t.cwd, ".pi"), { recursive: true });
+    await writeFile(
+      path.join(t.cwd, ".pi", "feature-flow.json"),
+      JSON.stringify({ tdd: true }),
+      "utf8",
+    );
+
+    const { specsRoot } = await featurePaths(t.cwd, "retry-tdd-handoff");
+    const registry = await loadRegistry(specsRoot, "retry-tdd-handoff");
+    registry.tickets[0]!.status = "needs_fix";
+    await saveRegistry(specsRoot, "retry-tdd-handoff", registry);
+
+    const contextPath = workerContextPath(specsRoot, "retry-tdd-handoff", "STK-001");
+    await writeFile(contextPath, "# Worker Context — STK-001\n\n## Continuation notes\n- retry me\n", "utf8");
+
+    patchHarnessCompatibility(t);
+    await t.run(when("/next-ticket retry-tdd-handoff", []));
+    await settleSession(t, 250);
+
+    const checkpoint = await loadCheckpoint(specsRoot, "retry-tdd-handoff");
+    const userMessages = t.events.messages
+      .filter((m) => m.role === "user")
+      .map(messageText)
+      .join("\n\n");
+
+    expect(checkpoint?.kind).toBe("ticket-tester");
+    expect(checkpoint && "phase" in checkpoint ? checkpoint.phase : undefined).toBe("retry");
+    expect(userMessages).toContain("Tester phase");
+  });
+
+  it("switches to the configured worker model when TDD is disabled", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
@@ -481,11 +519,7 @@ describe("feature-ticket-flow integration", () => {
     );
 
     patchHarnessCompatibility(t);
-    await t.run(
-      when("/next-ticket phase-models", [
-        says("APPROVED\nWorker complete."),
-      ]),
-    );
+    await t.run(when("/next-ticket phase-models", []));
     await settleSession(t, 250);
 
     const userMessages = t.events.messages
@@ -494,8 +528,8 @@ describe("feature-ticket-flow integration", () => {
       .join("\n\n");
 
     expect(userMessages).toContain("Worker phase");
-    expect(userMessages).toContain("Reviewer phase");
-    expect(currentModelRef(t)).toBe("openai/gpt-5-mini");
+    expect(userMessages).not.toContain("Reviewer phase");
+    expect(currentModelRef(t)).toBe("openai/gpt-4.1-mini");
   });
 
   it("sends worker prompt first when TDD is disabled", async () => {
@@ -554,7 +588,8 @@ describe("feature-ticket-flow integration", () => {
       .join("\n\n");
 
     expect(userMessages).toContain("04-feature-memory.md");
-    expect(userMessages).toContain("accumulated context from previous tickets");
+    expect(userMessages).toContain("handoff log");
+    expect(userMessages).toContain("patterns from previous tickets");
   });
 
   it("ignores worker/reviewer/tester artifact markdown files when loading the registry", async () => {
@@ -583,6 +618,11 @@ describe("feature-ticket-flow integration", () => {
     await writeFile(
       path.join(ticketsRoot, "STK-001-tester-notes.md"),
       "# Tester Notes — STK-001\n",
+      "utf8",
+    );
+    await writeFile(
+      path.join(ticketsRoot, "STK-001-handoff-log.md"),
+      "# Handoff Log — STK-001\n",
       "utf8",
     );
 
@@ -621,7 +661,51 @@ describe("feature-ticket-flow integration", () => {
     expect(userMessages).toContain("retry");
   });
 
-  it("auto-advances from worker to reviewer with a separate reviewer prompt", async () => {
+  it("creates an execution checkpoint for worker runs", async () => {
+    t = await createTestSession({
+      extensions: [EXTENSION_PATH],
+      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+      mockUI: { select: 0 },
+    });
+
+    await seedFeature(t.cwd, "reviewer-artifact-guard", [
+      { id: "STK-001", body: validTicket("STK-001") },
+    ]);
+
+    patchHarnessCompatibility(t);
+    await t.run(when("/next-ticket reviewer-artifact-guard", []));
+    await settleSession(t, 250);
+
+    const { specsRoot } = await featurePaths(t.cwd, "reviewer-artifact-guard");
+    const checkpoint = await loadCheckpoint(specsRoot, "reviewer-artifact-guard");
+
+    expect(checkpoint?.kind).toBe("ticket-execution");
+    expect(checkpoint && "executionRole" in checkpoint ? checkpoint.executionRole : undefined).toBe("worker");
+  });
+
+  it("writes a resumable checkpoint file as soon as execution starts", async () => {
+    t = await createTestSession({
+      extensions: [EXTENSION_PATH],
+      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+      mockUI: { select: 0 },
+    });
+
+    await seedFeature(t.cwd, "missing-outcome", [
+      { id: "STK-001", body: validTicket("STK-001") },
+    ]);
+
+    patchHarnessCompatibility(t);
+    await t.run(when("/next-ticket missing-outcome", []));
+    await settleSession(t, 250);
+
+    const { specsRoot } = await featurePaths(t.cwd, "missing-outcome");
+    const checkpoint = await loadCheckpoint(specsRoot, "missing-outcome");
+
+    expect(checkpoint).toBeDefined();
+    expect(checkpoint?.kind).toBe("ticket-execution");
+  });
+
+  it("includes worker prompt artifacts for execution", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
@@ -633,11 +717,7 @@ describe("feature-ticket-flow integration", () => {
     ]);
 
     patchHarnessCompatibility(t);
-    await t.run(
-      when("/next-ticket phase-prompts", [
-        says("APPROVED\nWorker done."),
-      ]),
-    );
+    await t.run(when("/next-ticket phase-prompts", []));
     await settleSession(t, 250);
 
     const userMessages = t.events.messages
@@ -646,7 +726,8 @@ describe("feature-ticket-flow integration", () => {
       .join("\n\n");
 
     expect(userMessages).toContain("Worker phase");
-    expect(userMessages).toContain("Reviewer phase");
-    expect(userMessages).toContain("reviewer-notes");
+    expect(userMessages).toContain("Phase: start");
+    expect(userMessages).toContain("handoff log");
+    expect(userMessages).toContain("feature-execution");
   });
 });

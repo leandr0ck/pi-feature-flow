@@ -27,6 +27,10 @@ const JSON_CONFIG_FILE = ".pi/feature-flow.json";
 const DEFAULT_CONFIG: FeatureFlowConfig = {
   specsRoot: DEFAULT_SPECS_ROOT,
   tdd: false,
+  execution: {
+    autoStartFirstTicketAfterPlanning: true,
+    autoAdvanceToNextTicket: true,
+  },
   agents: {
     planner: {},
     tester: {},
@@ -51,6 +55,10 @@ function normalizeConfig(parsed: Partial<FeatureFlowConfig>): FeatureFlowConfig 
   return {
     specsRoot: parsed.specsRoot || DEFAULT_SPECS_ROOT,
     tdd: parsed.tdd ?? false,
+    execution: {
+      ...DEFAULT_CONFIG.execution,
+      ...(parsed.execution || {}),
+    },
     agents: {
       ...DEFAULT_CONFIG.agents,
       ...(parsed.agents || {}),
@@ -68,6 +76,14 @@ export function resolveTddEnabled(config: FeatureFlowConfig): boolean {
 
 export function getAgentConfig(config: FeatureFlowConfig, role: FeatureAgentRole) {
   return config.agents?.[role] ?? {};
+}
+
+export function shouldAutoStartFirstTicketAfterPlanning(config: FeatureFlowConfig): boolean {
+  return config.execution?.autoStartFirstTicketAfterPlanning ?? true;
+}
+
+export function shouldAutoAdvanceToNextTicket(config: FeatureFlowConfig): boolean {
+  return config.execution?.autoAdvanceToNextTicket ?? true;
 }
 
 /**

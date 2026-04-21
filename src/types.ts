@@ -65,11 +65,20 @@ export type FeatureAgentConfig = {
   skills?: string[];
 };
 
+export type FeatureFlowExecutionConfig = {
+  /** Start the first available ticket automatically after planning. Default: true */
+  autoStartFirstTicketAfterPlanning?: boolean;
+  /** Continue automatically to subsequent tickets after one ticket finishes. Default: true */
+  autoAdvanceToNextTicket?: boolean;
+};
+
 export type FeatureFlowConfig = {
   /** Root directory containing feature folders. Default: "./docs/technical-specs" */
   specsRoot: string;
   /** Enable TDD-oriented execution. Default: false */
   tdd?: boolean;
+  /** Auto-execution behavior for ticket progression */
+  execution?: FeatureFlowExecutionConfig;
   /** Per-role agent configuration */
   agents?: Partial<Record<FeatureAgentRole, FeatureAgentConfig>>;
 };

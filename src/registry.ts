@@ -33,6 +33,10 @@ export function reviewerNotesPath(specsRoot: string, feature: string, ticketId: 
   return path.join(featureRoot(specsRoot, feature), DEFAULT_TICKETS_DIR_NAME, `${ticketId}-reviewer-notes.md`);
 }
 
+export function handoffLogPath(specsRoot: string, feature: string, ticketId: string) {
+  return path.join(featureRoot(specsRoot, feature), DEFAULT_TICKETS_DIR_NAME, `${ticketId}-handoff-log.md`);
+}
+
 export function featureCostPath(specsRoot: string, feature: string) {
   return path.join(featureRoot(specsRoot, feature), "05-cost.json");
 }
@@ -41,6 +45,7 @@ const TICKET_ARTIFACT_SUFFIXES = [
   "-tester-notes.md",
   "-reviewer-notes.md",
   "-worker-context.md",
+  "-handoff-log.md",
 ] as const;
 
 export function isPrimaryTicketMarkdown(file: string): boolean {
@@ -282,7 +287,7 @@ export async function recordTicketCost(
   specsRoot: string,
   feature: string,
   ticketId: string,
-  phase: "tester" | "worker",
+  phase: "tester" | "worker" | "reviewer" | "chief",
   runIndex: number,
   entry: Omit<TicketCostEntry, "ticketId" | "phase" | "runIndex">,
 ): Promise<void> {
