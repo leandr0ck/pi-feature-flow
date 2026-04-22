@@ -46,10 +46,14 @@ If `subagent` is unavailable, the package still works and falls back to direct e
     tickets/
       STK-001.md
       STK-002.md
-      STK-001-tester-notes.md     (TDD only — written by tester phase)
-      STK-001-reviewer-notes.md   (written by reviewer phase)
-      STK-001-worker-context.md   (written by chief — used on retry / continuation)
-      STK-001-handoff-log.md      (written incrementally by tester/worker/reviewer/chief)
+      STK-001-tester-notes.md       (TDD only — written by tester phase)
+      STK-001-tester-handoff.json   (structured tester handoff)
+      STK-001-worker-handoff.json   (structured worker handoff)
+      STK-001-reviewer-notes.md     (written by reviewer phase)
+      STK-001-reviewer-handoff.json (structured reviewer handoff)
+      STK-001-worker-context.md     (written by chief — used on retry / continuation)
+      STK-001-chief-handoff.json    (structured chief handoff)
+      STK-001-handoff-log.md        (written incrementally by tester/worker/reviewer/chief)
       ...
 ```
 
@@ -75,7 +79,7 @@ Send the welcome email when onboarding is completed for the first time.
 
 ## Fixed output templates
 
-The package now uses fixed markdown templates for all handoff artifacts so the model does not invent its own structure.
+The package now uses fixed markdown templates plus structured JSON handoff artifacts so the model does not invent its own structure and phase transitions can be validated semantically.
 
 ### Tester notes
 
@@ -106,6 +110,17 @@ The package now uses fixed markdown templates for all handoff artifacts so the m
 ## Evidence
 - <test output, files inspected, typecheck result>
 ```
+
+### Structured JSON handoffs
+
+Each phase now also writes a machine-readable JSON artifact:
+
+- `STK-001-tester-handoff.json`
+- `STK-001-worker-handoff.json`
+- `STK-001-reviewer-handoff.json`
+- `STK-001-chief-handoff.json`
+
+These are validated before the extension advances to the next phase.
 
 ### Worker context
 

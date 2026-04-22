@@ -11,6 +11,7 @@ describe("reviewer prompt", () => {
       "/specs/demo-feature/04-feature-memory.md",
       "/specs/demo-feature/tickets/STK-001-reviewer-notes.md",
       "/specs/demo-feature/tickets/STK-001-handoff-log.md",
+      "/specs/demo-feature/tickets/STK-001-reviewer-handoff.json",
       { specsRoot: "/specs" },
     );
 
@@ -18,5 +19,6 @@ describe("reviewer prompt", () => {
     expect(prompt).toContain("you may edit tests and/or implementation within the ticket-owned file scope");
     expect(prompt).toContain("add or adjust tests first whenever needed");
     expect(prompt).toContain("If review passes cleanly, do not edit code");
+    expect(prompt).toContain("reviewer-handoff.json");
   });
 });

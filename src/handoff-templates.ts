@@ -103,6 +103,61 @@ export function renderFeatureMemoryTemplate(feature: string): string {
   ].join("\n");
 }
 
+export function renderTesterHandoffJsonTemplate(ticketId: string): string {
+  return JSON.stringify({
+    ticketId,
+    phase: "tester",
+    status: "APPROVED",
+    testsWritten: [
+      { path: "tests/example.test.ts", scope: "covers the acceptance criteria" },
+    ],
+    testGuidelines: ["followed project test conventions"],
+    notesForWorker: ["run the documented test command first"],
+  }, null, 2);
+}
+
+export function renderWorkerHandoffJsonTemplate(ticketId: string): string {
+  return JSON.stringify({
+    ticketId,
+    phase: "worker",
+    status: "APPROVED",
+    filesChanged: [
+      { path: "src/example.ts", summary: "implemented the minimal slice", status: "complete" },
+    ],
+    technicalDecisions: ["kept implementation minimal to match the ticket"],
+    risks: ["none"],
+    notesForReviewer: ["tests and typecheck were run"],
+  }, null, 2);
+}
+
+export function renderReviewerHandoffJsonTemplate(ticketId: string): string {
+  return JSON.stringify({
+    ticketId,
+    phase: "reviewer",
+    status: "APPROVED",
+    findings: ["none"],
+    editsMade: ["none"],
+    evidence: ["tests pass", "typecheck clean"],
+    residualRisks: ["none"],
+    recommendation: "APPROVED",
+  }, null, 2);
+}
+
+export function renderChiefHandoffJsonTemplate(ticketId: string): string {
+  return JSON.stringify({
+    ticketId,
+    phase: "chief",
+    status: "APPROVED",
+    promotedToFeatureMemory: ["documented decisions and reusable patterns"],
+    reusablePatterns: ["reuse the validated implementation pattern in future tickets"],
+    continuationAdvice: ["read feature memory before starting the next ticket"],
+  }, null, 2);
+}
+
 export function toMarkdownCodeFence(content: string): string[] {
   return ["```md", ...content.trimEnd().split("\n"), "```"];
+}
+
+export function toJsonCodeFence(content: string): string[] {
+  return ["```json", ...content.trimEnd().split("\n"), "```"];
 }

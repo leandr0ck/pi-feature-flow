@@ -6,6 +6,7 @@ import { createTestSession, when, type TestSession } from "@marcfargas/pi-test-h
 import { loadConfig, resolveSpecsRoot } from "../src/config.js";
 import { loadRegistry, saveRegistry, featureMemoryPath, workerContextPath } from "../src/registry.js";
 import { loadCheckpoint } from "../src/feature-flow/state.js";
+import { getForbiddenBashDecision, isSafeValidationCommand } from "../src/feature-flow/bash-governance.js";
 
 process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || "test-key";
 
@@ -111,6 +112,22 @@ function validTicket(id: string, requires = "none"): string {
     "",
   ].join("\n");
 }
+
+describe("feature-ticket-flow governance", () => {
+  it("allows non-destructive verification commands", () => {
+    expect(isSafeValidationCommand("bun run typecheck")).toBe(true);
+    expect(isSafeValidationCommand("bun run build")).toBe(true);
+    expect(isSafeValidationCommand("npm run build")).toBe(true);
+    expect(getForbiddenBashDecision("bun run typecheck", "WORKER")).toBeUndefined();
+    expect(getForbiddenBashDecision("bun run build", "WORKER")).toBeUndefined();
+    expect(getForbiddenBashDecision("next build", "REVIEWER")).toBeUndefined();
+    expect(getForbiddenBashDecision("tsc --noEmit", "TESTER")).toBeUndefined();
+  });
+
+  it("still blocks tester test execution commands", () => {
+    expect(getForbiddenBashDecision("bun test", "TESTER")).toContain("Tester may not execute tests");
+  });
+});
 
 describe("feature-ticket-flow integration", () => {
   let t: TestSession | undefined;

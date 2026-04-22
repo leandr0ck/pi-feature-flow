@@ -37,6 +37,22 @@ export function handoffLogPath(specsRoot: string, feature: string, ticketId: str
   return path.join(featureRoot(specsRoot, feature), DEFAULT_TICKETS_DIR_NAME, `${ticketId}-handoff-log.md`);
 }
 
+export function testerHandoffPath(specsRoot: string, feature: string, ticketId: string) {
+  return path.join(featureRoot(specsRoot, feature), DEFAULT_TICKETS_DIR_NAME, `${ticketId}-tester-handoff.json`);
+}
+
+export function workerHandoffPath(specsRoot: string, feature: string, ticketId: string) {
+  return path.join(featureRoot(specsRoot, feature), DEFAULT_TICKETS_DIR_NAME, `${ticketId}-worker-handoff.json`);
+}
+
+export function reviewerHandoffPath(specsRoot: string, feature: string, ticketId: string) {
+  return path.join(featureRoot(specsRoot, feature), DEFAULT_TICKETS_DIR_NAME, `${ticketId}-reviewer-handoff.json`);
+}
+
+export function chiefHandoffPath(specsRoot: string, feature: string, ticketId: string) {
+  return path.join(featureRoot(specsRoot, feature), DEFAULT_TICKETS_DIR_NAME, `${ticketId}-chief-handoff.json`);
+}
+
 export function featureCostPath(specsRoot: string, feature: string) {
   return path.join(featureRoot(specsRoot, feature), "05-cost.json");
 }

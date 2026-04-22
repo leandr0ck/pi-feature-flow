@@ -10,11 +10,15 @@ import {
 } from "../src/config.js";
 import {
   areDependenciesDone,
+  chiefHandoffPath,
   featureCostPath,
   featureMemoryPath,
   handoffLogPath,
   readFeatureCost,
+  reviewerHandoffPath,
   reviewerNotesPath,
+  testerHandoffPath,
+  workerHandoffPath,
   workerContextPath,
   testerNotesPath,
   findNextAvailableTicket,
@@ -37,6 +41,13 @@ import {
   buildWorkerPrompt,
   resolveSpecFileInFeatureDir,
 } from "../src/feature-flow/prompts.js";
+import { getForbiddenBashDecision } from "../src/feature-flow/bash-governance.js";
+import {
+  validateChiefArtifacts,
+  validateReviewerArtifacts,
+  validateTesterArtifacts,
+  validateWorkerArtifacts,
+} from "../src/feature-flow/handoff-validation.js";
 import {
   deriveFeatureSlug,
   ensureFeatureDir,
@@ -83,6 +94,76 @@ function updateFeatureFlowStatus(
   );
 }
 
+async function clearStalePendingExecution(
+  pending: ReturnType<typeof getPendingExecution>,
+  reason?: string,
+): Promise<void> {
+  if (!pending) return;
+  setPendingExecution(undefined);
+  if ("specsRoot" in pending && "feature" in pending) {
+    await clearCheckpoint(pending.specsRoot, pending.feature);
+  }
+  if (reason) {
+    console.warn(`[feature-flow] cleared stale pending execution: ${reason}`);
+  }
+}
+
+async function getValidatedPendingExecution(): Promise<ReturnType<typeof getPendingExecution>> {
+  const pending = getPendingExecution();
+  if (!pending) return undefined;
+
+  if (!("specsRoot" in pending) || !("feature" in pending)) {
+    await clearStalePendingExecution(pending, "missing specsRoot/feature");
+    return undefined;
+  }
+
+  const checkpoint = await loadCheckpoint(pending.specsRoot, pending.feature);
+
+  if (pending.kind === "feature-plan") {
+    if (!checkpoint || checkpoint.kind !== "feature-plan") {
+      await clearStalePendingExecution(pending, "feature-plan without matching checkpoint");
+      return undefined;
+    }
+    return pending;
+  }
+
+  if (!checkpoint || checkpoint.kind === "feature-plan") {
+    await clearStalePendingExecution(pending, "ticket phase without matching checkpoint");
+    return undefined;
+  }
+
+  if (checkpoint.feature !== pending.feature || checkpoint.ticketId !== pending.ticketId) {
+    await clearStalePendingExecution(pending, "checkpoint ticket mismatch");
+    return undefined;
+  }
+
+  if (pending.kind === "ticket-tester" && checkpoint.kind !== "ticket-tester") {
+    await clearStalePendingExecution(pending, "tester pending mismatches checkpoint kind");
+    return undefined;
+  }
+
+  if (pending.kind === "ticket-execution") {
+    if (checkpoint.kind !== "ticket-execution" || checkpoint.executionRole !== pending.executionRole) {
+      await clearStalePendingExecution(pending, "execution pending mismatches checkpoint role");
+      return undefined;
+    }
+  }
+
+  try {
+    const registry = await loadRegistry(pending.specsRoot, pending.feature);
+    const ticket = getTicket(registry, pending.ticketId);
+    if (!ticket || ticket.status !== "in_progress") {
+      await clearStalePendingExecution(pending, `ticket ${pending.ticketId} is not in_progress`);
+      return undefined;
+    }
+  } catch {
+    await clearStalePendingExecution(pending, "could not load registry for pending execution");
+    return undefined;
+  }
+
+  return pending;
+}
+
 export default function featureTicketFlow(pi: ExtensionAPI) {
   let activeModelLabel: string | undefined;
 
@@ -94,7 +175,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
 
   // ── Inject ticket as mandatory system prompt context ─────────────────────────
   pi.on("before_agent_start", async (event, _ctx) => {
-    const pending = getPendingExecution();
+    const pending = await getValidatedPendingExecution();
     if (!pending || pending.kind === "feature-plan") return;
 
     const feature = (pending as any).feature as string;
@@ -219,7 +300,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
 
   // ── Strict governance for tool calls ──────────────────────────────────────
   pi.on("tool_call", async (event, _ctx) => {
-    const pending = getPendingExecution();
+    const pending = await getValidatedPendingExecution();
     const decision = await evaluateGovernanceForToolCall(event, pending);
     if (!decision?.block) return;
     return decision;
@@ -227,12 +308,14 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
 
   // ── Show current phase + active model in status bar ──────────────────────
   pi.on("agent_start", async (_event, ctx) => {
-    await refreshFeatureFlowStatus(ctx);
+    await getValidatedPendingExecution();
+    refreshFeatureFlowStatus(ctx);
   });
 
   pi.on("model_select", async (event, ctx) => {
     activeModelLabel = `${event.model.provider}/${event.model.id}`;
-    await refreshFeatureFlowStatus(ctx);
+    await getValidatedPendingExecution();
+    refreshFeatureFlowStatus(ctx);
   });
 
   pi.on("agent_end", async (_statusEvent, ctx) => {
@@ -305,13 +388,12 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       if (pending.kind === "ticket-tester" && parsed.status === "done") {
         const notesPath = testerNotesPath(pending.specsRoot, pending.feature, pending.ticketId);
         const logPath = handoffLogPath(pending.specsRoot, pending.feature, pending.ticketId);
-        const missing: string[] = [];
-        if (!(await fsPromises.access(notesPath).then(() => true).catch(() => false))) missing.push(notesPath);
-        if (!(await fsPromises.access(logPath).then(() => true).catch(() => false))) missing.push(logPath);
-        if (missing.length > 0) {
+        const testerJsonPath = testerHandoffPath(pending.specsRoot, pending.feature, pending.ticketId);
+        const validation = await validateTesterArtifacts(notesPath, logPath, testerJsonPath);
+        if (!validation.ok) {
           parsed = {
             status: "needs_fix",
-            note: `APPROVED was reported but tester artifacts were not written: ${missing.join(", ")}`,
+            note: `APPROVED was reported but tester artifacts were incomplete: ${validation.issues.join("; ")}`,
           };
         }
       }
@@ -319,10 +401,12 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       if (pending.kind === "ticket-execution" && parsed.status === "done") {
         if (pending.executionRole === "worker") {
           const logPath = handoffLogPath(pending.specsRoot, pending.feature, pending.ticketId);
-          if (!(await fsPromises.access(logPath).then(() => true).catch(() => false))) {
+          const workerJsonPath = workerHandoffPath(pending.specsRoot, pending.feature, pending.ticketId);
+          const validation = await validateWorkerArtifacts(logPath, workerJsonPath);
+          if (!validation.ok) {
             parsed = {
               status: "needs_fix",
-              note: `APPROVED was reported but worker handoff log was not written: ${logPath}`,
+              note: `APPROVED was reported but worker artifacts were incomplete: ${validation.issues.join("; ")}`,
             };
           }
         }
@@ -330,13 +414,12 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         if (pending.executionRole === "reviewer") {
           const notesPath = reviewerNotesPath(pending.specsRoot, pending.feature, pending.ticketId);
           const logPath = handoffLogPath(pending.specsRoot, pending.feature, pending.ticketId);
-          const missing: string[] = [];
-          if (!(await fsPromises.access(notesPath).then(() => true).catch(() => false))) missing.push(notesPath);
-          if (!(await fsPromises.access(logPath).then(() => true).catch(() => false))) missing.push(logPath);
-          if (missing.length > 0) {
+          const reviewerJsonPath = reviewerHandoffPath(pending.specsRoot, pending.feature, pending.ticketId);
+          const validation = await validateReviewerArtifacts(notesPath, logPath, reviewerJsonPath);
+          if (!validation.ok) {
             parsed = {
               status: "needs_fix",
-              note: `APPROVED was reported but reviewer artifacts were not written: ${missing.join(", ")}`,
+              note: `APPROVED was reported but reviewer artifacts were incomplete: ${validation.issues.join("; ")}`,
             };
           }
         }
@@ -345,14 +428,12 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
           const contextPath = workerContextPath(pending.specsRoot, pending.feature, pending.ticketId);
           const memoryPath = featureMemoryPath(pending.specsRoot, pending.feature);
           const logPath = handoffLogPath(pending.specsRoot, pending.feature, pending.ticketId);
-          const missing: string[] = [];
-          if (!(await fsPromises.access(contextPath).then(() => true).catch(() => false))) missing.push(contextPath);
-          if (!(await fsPromises.access(memoryPath).then(() => true).catch(() => false))) missing.push(memoryPath);
-          if (!(await fsPromises.access(logPath).then(() => true).catch(() => false))) missing.push(logPath);
-          if (missing.length > 0) {
+          const chiefJsonPath = chiefHandoffPath(pending.specsRoot, pending.feature, pending.ticketId);
+          const validation = await validateChiefArtifacts(contextPath, memoryPath, logPath, chiefJsonPath);
+          if (!validation.ok) {
             parsed = {
               status: "needs_fix",
-              note: `APPROVED was reported but chief artifacts were missing: ${missing.join(", ")}`,
+              note: `APPROVED was reported but chief artifacts were incomplete: ${validation.issues.join("; ")}`,
             };
           }
         }
@@ -848,6 +929,24 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     },
   });
 
+  // ── /feature-flow-reset ────────────────────────────────────────────────────
+  pi.registerCommand("feature-flow-reset", {
+    description: "Clear stale in-memory/checkpoint feature-flow execution state",
+    handler: async (_args, ctx: CommandContext) => {
+      const pending = getPendingExecution();
+      if (!pending) {
+        ctx.ui.setStatus("feature-flow", "");
+        ctx.ui.notify("feature-flow: no pending execution to clear", "info");
+        return;
+      }
+
+      await clearStalePendingExecution(pending, "manual reset command");
+      ctx.ui.setStatus("feature-flow", "");
+      ctx.ui.notify("feature-flow: pending execution cleared", "info");
+      emitInfo(pi, "Feature-flow runtime state cleared. Governance is now inactive until a new flow starts.");
+    },
+  });
+
   // ── /feature-cost ──────────────────────────────────────────────────────────
   pi.registerCommand("feature-cost", {
     description: "Show feature cost breakdown by ticket and phase",
@@ -918,10 +1017,14 @@ type GovernanceContext = {
   allowedExactPaths: Set<string>;
   allowedDirectories: Set<string>;
   testerNotesPath?: string;
+  testerHandoffPath?: string;
   reviewerNotesPath?: string;
+  reviewerHandoffPath?: string;
   workerContextPath?: string;
+  workerHandoffPath?: string;
   handoffLogPath?: string;
   featureMemoryPath?: string;
+  chiefHandoffPath?: string;
 };
 
 type RoleRuntimeContext = Pick<ExtensionContext, "modelRegistry" | "model" | "ui">;
@@ -967,21 +1070,6 @@ const PROTECTED_WRITE_BASENAMES = new Set([
   "procfile",
   "app.yaml",
 ]);
-
-const FORBIDDEN_BASH_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
-  {
-    pattern: /\b(?:bun|npm|pnpm|yarn)\s+run\s+deploy\b|\bwrangler\s+deploy\b|\bvercel\b|\bnetlify\s+deploy\b|\bfly\s+deploy\b|\brailway\s+up\b|\bterraform\s+apply\b|\bpulumi\s+up\b|\bkubectl\s+apply\b|\bgh\s+workflow\s+run\b|\bdocker\s+push\b/i,
-    reason: "Deploy/publish/infra execution is forbidden inside feature-flow phases.",
-  },
-  {
-    pattern: /\bnpm\s+publish\b|\bpnpm\s+publish\b|\byarn\s+publish\b|\bgit\s+push\b|\bgit\s+tag\b|\bgh\s+pr\s+create\b/i,
-    reason: "Publishing and remote git operations are forbidden inside feature-flow phases.",
-  },
-  {
-    pattern: /db:reconcile|db-reconcile|INSERT\s+INTO\s+drizzle\.__drizzle_migrations|ALTER\s+TABLE|DROP\s+TABLE|CREATE\s+TABLE|\bpsql\b|drizzle-kit\s+push\b/i,
-    reason: "Direct database surgery is forbidden. Use schema.ts + Drizzle generate/migrate only.",
-  },
-];
 
 function sumUsage(base?: Partial<UsageTotals>, next?: Partial<UsageTotals>): UsageTotals {
   return {
@@ -1071,10 +1159,14 @@ async function buildGovernanceContext(
   if (!context.feature || !context.specsRoot || !context.ticketId) return context;
 
   context.testerNotesPath = testerNotesPath(context.specsRoot, context.feature, context.ticketId);
+  context.testerHandoffPath = testerHandoffPath(context.specsRoot, context.feature, context.ticketId);
   context.reviewerNotesPath = reviewerNotesPath(context.specsRoot, context.feature, context.ticketId);
+  context.reviewerHandoffPath = reviewerHandoffPath(context.specsRoot, context.feature, context.ticketId);
   context.workerContextPath = workerContextPath(context.specsRoot, context.feature, context.ticketId);
+  context.workerHandoffPath = workerHandoffPath(context.specsRoot, context.feature, context.ticketId);
   context.handoffLogPath = handoffLogPath(context.specsRoot, context.feature, context.ticketId);
   context.featureMemoryPath = featureMemoryPath(context.specsRoot, context.feature);
+  context.chiefHandoffPath = chiefHandoffPath(context.specsRoot, context.feature, context.ticketId);
 
   const ticketPath = path.join(context.specsRoot, context.feature, "tickets", `${context.ticketId}.md`);
   const ticketContent = await fsPromises.readFile(ticketPath, "utf8").catch(() => "");
@@ -1138,17 +1230,18 @@ function getPhaseWriteDecision(
   const inAllowedDir = [...governance.allowedDirectories].some((dir) => isWithinPath(resolvedPath, dir));
 
   if (governance.phase === "TESTER") {
-    if (resolvedPath === governance.testerNotesPath || resolvedPath === governance.handoffLogPath || isTestLikePath(resolvedPath)) return undefined;
+    if (resolvedPath === governance.testerNotesPath || resolvedPath === governance.testerHandoffPath || resolvedPath === governance.handoffLogPath || isTestLikePath(resolvedPath)) return undefined;
     return {
       block: true,
       reason:
-        `TESTER PHASE VIOLATION: Cannot write '${rawPath}'. During TESTER you may only write test files, ${path.basename(governance.testerNotesPath ?? "tester-notes")}, and ${path.basename(governance.handoffLogPath ?? "handoff-log")}.`,
+        `TESTER PHASE VIOLATION: Cannot write '${rawPath}'. During TESTER you may only write test files, ${path.basename(governance.testerNotesPath ?? "tester-notes")}, ${path.basename(governance.testerHandoffPath ?? "tester-handoff.json")}, and ${path.basename(governance.handoffLogPath ?? "handoff-log")}.`,
     };
   }
 
   if (governance.phase === "REVIEWER") {
     if (
       resolvedPath === governance.reviewerNotesPath
+      || resolvedPath === governance.reviewerHandoffPath
       || resolvedPath === governance.handoffLogPath
       || isTestLikePath(resolvedPath)
       || exact
@@ -1157,51 +1250,31 @@ function getPhaseWriteDecision(
     return {
       block: true,
       reason:
-        `REVIEWER PHASE VIOLATION: Reviewer may only modify ticket-scoped implementation files, test files, reviewer notes at '${governance.reviewerNotesPath}', and the handoff log at '${governance.handoffLogPath}'. Allowed exact paths: ${formatAllowedPaths(governance.allowedExactPaths)}${governance.allowedDirectories.size > 0 ? ` | Allowed directories: ${formatAllowedPaths(governance.allowedDirectories)}` : ""}`,
+        `REVIEWER PHASE VIOLATION: Reviewer may only modify ticket-scoped implementation files, test files, reviewer notes at '${governance.reviewerNotesPath}', reviewer handoff JSON at '${governance.reviewerHandoffPath}', and the handoff log at '${governance.handoffLogPath}'. Allowed exact paths: ${formatAllowedPaths(governance.allowedExactPaths)}${governance.allowedDirectories.size > 0 ? ` | Allowed directories: ${formatAllowedPaths(governance.allowedDirectories)}` : ""}`,
     };
   }
 
   if (governance.phase === "CHIEF") {
-    if (resolvedPath === governance.featureMemoryPath || resolvedPath === governance.workerContextPath || resolvedPath === governance.handoffLogPath) return undefined;
+    if (resolvedPath === governance.featureMemoryPath || resolvedPath === governance.workerContextPath || resolvedPath === governance.chiefHandoffPath || resolvedPath === governance.handoffLogPath) return undefined;
     return {
       block: true,
       reason:
-        `CHIEF PHASE VIOLATION: Chief may only write '${governance.featureMemoryPath}', '${governance.workerContextPath}', and '${governance.handoffLogPath}'.`,
+        `CHIEF PHASE VIOLATION: Chief may only write '${governance.featureMemoryPath}', '${governance.workerContextPath}', '${governance.chiefHandoffPath}', and '${governance.handoffLogPath}'.`,
     };
   }
 
   if (governance.phase === "WORKER") {
-    if (resolvedPath === governance.handoffLogPath || exact || inAllowedDir) return undefined;
+    if (resolvedPath === governance.handoffLogPath || resolvedPath === governance.workerHandoffPath || exact || inAllowedDir) return undefined;
     return {
       block: true,
       reason:
-        `WORKER PHASE VIOLATION: '${rawPath}' is outside the ticket-allowed file scope. Only paths explicitly listed in '- Files:' may be modified, plus the handoff log '${governance.handoffLogPath}'. Allowed exact paths: ${formatAllowedPaths(governance.allowedExactPaths)}${governance.allowedDirectories.size > 0 ? ` | Allowed directories: ${formatAllowedPaths(governance.allowedDirectories)}` : ""}`,
+        `WORKER PHASE VIOLATION: '${rawPath}' is outside the ticket-allowed file scope. Only paths explicitly listed in '- Files:' may be modified, plus the handoff log '${governance.handoffLogPath}' and worker handoff JSON '${governance.workerHandoffPath}'. Allowed exact paths: ${formatAllowedPaths(governance.allowedExactPaths)}${governance.allowedDirectories.size > 0 ? ` | Allowed directories: ${formatAllowedPaths(governance.allowedDirectories)}` : ""}`,
     };
   }
 
   return undefined;
 }
 
-function getForbiddenBashDecision(command: string, phase?: GovernancePhase): string | undefined {
-  for (const entry of FORBIDDEN_BASH_PATTERNS) {
-    if (entry.pattern.test(command)) return entry.reason;
-  }
-
-  if (phase === "TESTER" && isTestExecutionCommand(command)) {
-    return "Tester may not execute tests. The tester role is limited to reading the ticket, writing test files, and documenting the test plan.";
-  }
-
-  const lower = command.toLowerCase();
-  const mutatesFile = />|>>|\btee\b|\bsed\b[^\n]*\s-i\b|\bperl\b[^\n]*\s-pi\b|\bcp\b|\bmv\b|\brm\b|\btouch\b|\btruncate\b/.test(lower);
-
-  for (const protectedHint of [".env", "drizzle/", "drizzle\\", ".github/workflows", "wrangler.", "vercel.json", "netlify.toml", "fly.toml", "railway.json", "docker-compose", "terraform", "helm/"]) {
-    if (lower.includes(protectedHint.toLowerCase())) {
-      return `Bash command attempts to mutate a protected path (${protectedHint}).`;
-    }
-  }
-
-  return undefined;
-}
 
 function getProtectedPathReason(cwd: string, resolvedPath: string): string | undefined {
   const rel = toPosixRelative(cwd, resolvedPath);
@@ -1245,10 +1318,6 @@ function isWithinPath(target: string, root: string): boolean {
 
 function isTestLikePath(filePath: string): boolean {
   return /(?:^|\/)(?:tests?|__tests__)\//.test(filePath) || /\.(?:test|spec)\.[^.]+$/i.test(filePath);
-}
-
-function isTestExecutionCommand(command: string): boolean {
-  return /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|\bvitest\b|\bjest\b|\bplaywright\s+test\b|\bpytest\b|\bgo\s+test\b|\bcargo\s+test\b|\bphpunit\b|\brspec\b/i.test(command);
 }
 
 function formatAllowedPaths(paths: Set<string>): string {
@@ -1488,9 +1557,10 @@ async function launchTesterPhase(
   const ticketPath = path.join(featureDir, "tickets", `${ticketId}.md`);
   const notesPath = testerNotesPath(specsRoot, feature, ticketId);
   const logPath = handoffLogPath(specsRoot, feature, ticketId);
+  const testerJsonPath = testerHandoffPath(specsRoot, feature, ticketId);
 
   const message = [
-    buildTesterPrompt(feature, ticketId, featureDir, ticketPath, notesPath, logPath, resolvedConfig),
+    buildTesterPrompt(feature, ticketId, featureDir, ticketPath, notesPath, logPath, testerJsonPath, resolvedConfig),
     "",
     "## Subagent guidance",
     ...buildSubagentGuidance(resolvedConfig, "execution"),
@@ -1528,6 +1598,7 @@ async function launchWorkerChain(
   const ctxPath = workerContextPath(specsRoot, feature, ticketId);
   const ctxExists = await fsPromises.access(ctxPath).then(() => true).catch(() => false);
   const logPath = handoffLogPath(specsRoot, feature, ticketId);
+  const workerJsonPath = workerHandoffPath(specsRoot, feature, ticketId);
 
   const message = [
     buildWorkerPrompt(
@@ -1539,6 +1610,7 @@ async function launchWorkerChain(
       notesExist ? notesPath : undefined,
       ctxExists && phase === "retry" ? ctxPath : undefined,
       logPath,
+      workerJsonPath,
       resolvedConfig,
       phase,
     ),
@@ -1583,6 +1655,7 @@ async function launchReviewerPhase(
   const memExists = await fsPromises.access(memPath).then(() => true).catch(() => false);
   const reviewPath = reviewerNotesPath(specsRoot, feature, ticketId);
   const logPath = handoffLogPath(specsRoot, feature, ticketId);
+  const reviewerJsonPath = reviewerHandoffPath(specsRoot, feature, ticketId);
 
   const message = [
     buildReviewerPrompt(
@@ -1593,6 +1666,7 @@ async function launchReviewerPhase(
       memExists ? memPath : undefined,
       reviewPath,
       logPath,
+      reviewerJsonPath,
       resolvedConfig,
     ),
     "",
@@ -1636,9 +1710,10 @@ async function launchChiefPhase(
   const reviewPath = reviewerNotesPath(specsRoot, feature, ticketId);
   const contextPath = workerContextPath(specsRoot, feature, ticketId);
   const logPath = handoffLogPath(specsRoot, feature, ticketId);
+  const chiefJsonPath = chiefHandoffPath(specsRoot, feature, ticketId);
 
   const message = [
-    buildChiefPrompt(feature, ticketId, featureDir, ticketPath, memPath, reviewPath, contextPath, logPath, resolvedConfig),
+    buildChiefPrompt(feature, ticketId, featureDir, ticketPath, memPath, reviewPath, contextPath, logPath, chiefJsonPath, resolvedConfig),
     "",
     "## Subagent guidance",
     ...buildSubagentGuidance(resolvedConfig, "execution"),

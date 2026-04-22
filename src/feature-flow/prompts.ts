@@ -2,11 +2,16 @@ import path from "node:path";
 import { loadConfig, renderAgentRoles } from "../config.js";
 import { buildExecutionPlanTemplateInstructions } from "../execution-plan-template.js";
 import {
+  renderChiefHandoffJsonTemplate,
   renderFeatureMemoryTemplate,
   renderHandoffLogTemplate,
+  renderReviewerHandoffJsonTemplate,
   renderReviewerNotesTemplate,
+  renderTesterHandoffJsonTemplate,
   renderTesterNotesTemplate,
   renderWorkerContextTemplate,
+  renderWorkerHandoffJsonTemplate,
+  toJsonCodeFence,
   toMarkdownCodeFence,
 } from "../handoff-templates.js";
 import { buildTicketTemplateInstructions } from "../ticket-template.js";
@@ -91,6 +96,7 @@ export function buildTesterPrompt(
   ticketPath: string,
   testerNotesPath: string,
   handoffLogPath: string,
+  testerHandoffPath: string,
   config: FeatureFlowConfig,
 ): string {
   return [
@@ -114,6 +120,7 @@ export function buildTesterPrompt(
     "3. Do NOT run the test suite. Leave execution to the Worker.",
     `4. Write the tester notes file to: ${testerNotesPath}`,
     `5. Create or update the handoff log at: ${handoffLogPath}`,
+    `6. Write the structured tester handoff JSON to: ${testerHandoffPath}`,
     "",
     "### Output format for tester notes (exact):",
     ...toMarkdownCodeFence(renderTesterNotesTemplate(ticketId)),
@@ -121,14 +128,18 @@ export function buildTesterPrompt(
     "### Output format for handoff log update (exact template — update only the Tester section in this phase):",
     ...toMarkdownCodeFence(renderHandoffLogTemplate(ticketId)),
     "",
+    "### Structured tester handoff JSON (exact keys, valid JSON):",
+    ...toJsonCodeFence(renderTesterHandoffJsonTemplate(ticketId)),
+    "",
     "### What APPROVED means here:",
     "- Tests are written",
     "- Project test guidelines are followed",
     "- Tester notes file is written",
     "- Handoff log is updated with the Tester section",
+    "- Structured tester handoff JSON is written",
     "",
     "Say BLOCKED if required test infrastructure or conventions are missing. Say NEEDS-FIX if the tests are incomplete or not aligned with project guidelines.",
-    "Say APPROVED only when all four conditions above are met.",
+    "Say APPROVED only when all five conditions above are met.",
     "",
     "## Agent configuration",
     ...renderRoleConfig(config, "tester"),
@@ -149,6 +160,7 @@ export function buildWorkerPrompt(
   testerNotesPath: string | undefined,
   workerContextPath: string | undefined,
   handoffLogPath: string,
+  workerHandoffPath: string,
   config: FeatureFlowConfig,
   phase: "start" | "resume" | "retry",
 ): string {
@@ -190,8 +202,9 @@ export function buildWorkerPrompt(
           "5. Run the tests. Show GREEN output verbatim.",
           "6. Run typecheck. Show clean output or fix every error.",
           `7. Update the Worker section in ${handoffLogPath} with files changed, technical decisions, and risks.`,
-          "8. Verify every Acceptance Criterion is met.",
-          "9. Say APPROVED only if: tests pass + typecheck clean + all ACs satisfied + handoff log updated.",
+          `8. Write the structured worker handoff JSON to ${workerHandoffPath}.`,
+          "9. Verify every Acceptance Criterion is met.",
+          "10. Say APPROVED only if: tests pass + typecheck clean + all ACs satisfied + handoff log updated + worker handoff JSON written.",
         ]
       : [
           "1. Read the Implementation Notes in the ticket, in order.",
@@ -202,7 +215,8 @@ export function buildWorkerPrompt(
           "5. Run the tests again. Show GREEN output verbatim.",
           "6. Run typecheck. Fix every error.",
           `7. Create or update ${handoffLogPath} with a Worker section describing the implementation and risks.`,
-          "8. Say APPROVED only if: tests pass + typecheck clean + all ACs satisfied + handoff log updated.",
+          `8. Write the structured worker handoff JSON to ${workerHandoffPath}.`,
+          "9. Say APPROVED only if: tests pass + typecheck clean + all ACs satisfied + handoff log updated + worker handoff JSON written.",
         ]),
     "",
     "### What is NOT allowed:",
@@ -213,6 +227,9 @@ export function buildWorkerPrompt(
     "- Editing .env files, deploy/infra files, CI workflows, or lockfiles",
     "- Running deploy, publish, git push, raw SQL, reconcile, or direct DB surgery commands",
     "- Marking APPROVED before running tests",
+    "",
+    "### Structured worker handoff JSON (exact keys, valid JSON):",
+    ...toJsonCodeFence(renderWorkerHandoffJsonTemplate(ticketId)),
     "",
     "If you discover follow-up work that is out of scope, record it in the ticket file and continue.",
     "If a real blocker prevents progress, say BLOCKED and explain exactly what is missing.",
@@ -235,6 +252,7 @@ export function buildReviewerPrompt(
   memoryPath: string | undefined,
   reviewerNotesPath: string,
   handoffLogPath: string,
+  reviewerHandoffPath: string,
   config: FeatureFlowConfig,
 ): string {
   const lines = [
@@ -270,7 +288,8 @@ export function buildReviewerPrompt(
     "7. Run typecheck. Clean output required before approval.",
     `8. Write ${reviewerNotesPath} using the exact format below.`,
     `9. Update ${handoffLogPath} with a Reviewer section summarising findings, any edits made, evidence, and residual risks.`,
-    "10. Say APPROVED only if: tests pass + all ACs met + no undocumented scope + typecheck clean + handoff log updated.",
+    `10. Write the structured reviewer handoff JSON to ${reviewerHandoffPath}.`,
+    "11. Say APPROVED only if: tests pass + all ACs met + no undocumented scope + typecheck clean + handoff log updated + reviewer handoff JSON written.",
     "    Say NEEDS-FIX otherwise with specific findings.",
     "",
     `## Output: write reviewer notes to ${reviewerNotesPath}`,
@@ -279,6 +298,9 @@ export function buildReviewerPrompt(
     "",
     "## Handoff log template (update only the Reviewer section in this phase)",
     ...toMarkdownCodeFence(renderHandoffLogTemplate(ticketId)),
+    "",
+    "## Structured reviewer handoff JSON (exact keys, valid JSON)",
+    ...toJsonCodeFence(renderReviewerHandoffJsonTemplate(ticketId)),
     "",
     "## Agent configuration",
     ...renderRoleConfig(config, "reviewer"),
@@ -299,6 +321,7 @@ export function buildChiefPrompt(
   reviewerNotesPath: string,
   workerContextPath: string,
   handoffLogPath: string,
+  chiefHandoffPath: string,
   config: FeatureFlowConfig,
 ): string {
   return [
@@ -322,13 +345,17 @@ export function buildChiefPrompt(
     "   Use this exact format:",
     ...toMarkdownCodeFence(renderWorkerContextTemplate(ticketId)).map((line) => `   ${line}`),
     `4. Append a Chief section to ${handoffLogPath} summarising what was promoted to feature memory and what future tickets should reuse.`,
-    "5. Do NOT modify the ticket registry directly. The extension updates it automatically.",
+    `5. Write the structured chief handoff JSON to ${chiefHandoffPath}.`,
+    "6. Do NOT modify the ticket registry directly. The extension updates it automatically.",
     "",
     "## Feature memory template (use this exact template if the file does not exist yet)",
     ...toMarkdownCodeFence(renderFeatureMemoryTemplate(feature)),
     "",
     "## Handoff log template (update only the Chief section in this phase)",
     ...toMarkdownCodeFence(renderHandoffLogTemplate(ticketId)),
+    "",
+    "## Structured chief handoff JSON (exact keys, valid JSON)",
+    ...toJsonCodeFence(renderChiefHandoffJsonTemplate(ticketId)),
     "",
     "## Agent configuration",
     ...renderRoleConfig(config, "chief"),
@@ -374,6 +401,7 @@ export function buildTicketExecutionPrompt(
   handoffLogPath: string,
   config: FeatureFlowConfig,
   phase: "start" | "resume" | "retry",
+  workerHandoffPath: string,
 ): string {
   return buildWorkerPrompt(
     feature,
@@ -384,6 +412,7 @@ export function buildTicketExecutionPrompt(
     testerNotesPath,
     workerContextPath,
     handoffLogPath,
+    workerHandoffPath,
     config,
     phase,
   );

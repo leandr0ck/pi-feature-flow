@@ -81,6 +81,7 @@ describe("validateTicketTemplate", () => {
     "Do something.",
     "",
     "- Requires: none",
+    "- Files: src/example.ts, tests/example.test.ts",
     "",
     "## Implementation Notes",
     "- Keep it minimal.",

@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  renderChiefHandoffJsonTemplate,
   renderFeatureMemoryTemplate,
   renderHandoffLogTemplate,
+  renderReviewerHandoffJsonTemplate,
   renderReviewerNotesTemplate,
+  renderTesterHandoffJsonTemplate,
   renderTesterNotesTemplate,
   renderWorkerContextTemplate,
+  renderWorkerHandoffJsonTemplate,
+  toJsonCodeFence,
   toMarkdownCodeFence,
 } from "../src/handoff-templates.js";
 
@@ -54,7 +59,18 @@ describe("handoff templates", () => {
     expect(content).toContain("## Ticket learnings");
   });
 
+  it("renders structured JSON handoff templates", () => {
+    expect(renderTesterHandoffJsonTemplate("STK-001")).toContain('"phase": "tester"');
+    expect(renderWorkerHandoffJsonTemplate("STK-001")).toContain('"phase": "worker"');
+    expect(renderReviewerHandoffJsonTemplate("STK-001")).toContain('"phase": "reviewer"');
+    expect(renderChiefHandoffJsonTemplate("STK-001")).toContain('"phase": "chief"');
+  });
+
   it("wraps template content in markdown fences", () => {
     expect(toMarkdownCodeFence("# Title\n")).toEqual(["```md", "# Title", "```"]);
+  });
+
+  it("wraps template content in json fences", () => {
+    expect(toJsonCodeFence('{"ok":true}\n')).toEqual(["```json", '{"ok":true}', "```"]);
   });
 });

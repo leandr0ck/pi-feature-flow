@@ -285,11 +285,13 @@ describe("retry context in prompts", () => {
       "/tmp/test/tickets/STK-001-handoff-log.md",
       { specsRoot: "./docs/technical-specs" },
       "retry",
+      "/tmp/test/tickets/STK-001-worker-handoff.json",
     );
     expect(prompt).toContain("worker-context");
     expect(prompt).toContain("handoff-log");
     expect(prompt).toContain("RETRY");
     expect(prompt).toContain("read first");
+    expect(prompt).toContain("worker-handoff.json");
   });
 
   it("does not include workerContextPath reference when phase is start", () => {
@@ -304,6 +306,7 @@ describe("retry context in prompts", () => {
       "/tmp/test/tickets/STK-001-handoff-log.md",
       { specsRoot: "./docs/technical-specs" },
       "start",
+      "/tmp/test/tickets/STK-001-worker-handoff.json",
     );
     expect(prompt).not.toContain("RETRY");
     expect(prompt).not.toContain("read this first");
