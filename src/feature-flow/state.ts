@@ -15,6 +15,7 @@ export type PendingExecution =
       feature: string;
       ticketId: string;
       phase: "start" | "resume" | "retry";
+      profileName?: string;
       cwd: string;
       specsRoot: string;
     }
@@ -25,6 +26,7 @@ export type PendingExecution =
       ticketId: string;
       phase: "start" | "resume" | "retry";
       executionRole: "worker" | "reviewer" | "chief";
+      profileName?: string;
       accumulatedUsage?: {
         inputTokens: number;
         outputTokens: number;

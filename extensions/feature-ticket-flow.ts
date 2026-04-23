@@ -1,6 +1,7 @@
 import path from "node:path";
 import { promises as fsPromises } from "node:fs";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { CommandPreset, FeatureAgentRole, FeatureFlowConfig } from "../src/types.js";
 import {
   loadConfig,
   resolveSpecsRoot,
@@ -8,6 +9,11 @@ import {
   shouldAutoAdvanceToNextTicket,
   shouldAutoStartFirstTicketAfterPlanning,
 } from "../src/config.js";
+import { createRuntimeConfigStore } from "../src/config-store.js";
+import { startRun, updateRun, finishRun, type Phase } from "../src/run-history.js";
+import { FeatureFlowStatusComponent } from "../src/ui/status.js";
+import { FeatureFlowSettingsComponent } from "../src/ui/settings.js";
+import { resolveModelForRole } from "../src/model-tiers.js";
 import {
   areDependenciesDone,
   chiefHandoffPath,
@@ -69,6 +75,8 @@ import {
 import { createFeatureCompletions } from "../src/feature-flow/ui.js";
 import { validateFeature } from "../src/validation.js";
 
+// ─── Config gate helpers ───────────────────────────────────────────────────────
+
 type CommandContext = ExtensionCommandContext & {
   ui: {
     notify: (msg: string, type?: "error" | "warning" | "info") => void;
@@ -76,6 +84,52 @@ type CommandContext = ExtensionCommandContext & {
     input: Function;
   };
 };
+
+/**
+ * Returns the ConfigGateState for the given cwd without throwing.
+ * Uses createRuntimeConfigStore internally (fresh per call).
+ */
+function getConfigGateState(cwd: string) {
+  return createRuntimeConfigStore(cwd).getGateState();
+}
+
+/**
+ * Emits a notification for config diagnostics at session_start.
+ * Shows a summary line: errors, warnings, or clean.
+ */
+function notifyConfigDiagnostics(ctx: { cwd: string; ui: { notify: (msg: string, type?: "error" | "warning" | "info") => void } }): void {
+  const gate = getConfigGateState(ctx.cwd);
+  if (gate.diagnostics.length === 0) return; // clean — no notification
+
+  const errors = gate.diagnostics.filter((d) => d.level === "error");
+  const warnings = gate.diagnostics.filter((d) => d.level === "warning");
+
+  const parts: string[] = [];
+  if (errors.length > 0) parts.push(`${errors.length} error${errors.length > 1 ? "s" : ""}`);
+  if (warnings.length > 0) parts.push(`${warnings.length} warning${warnings.length > 1 ? "s" : ""}`);
+  const summary = parts.join(", ");
+
+  ctx.ui.notify(`feature-flow config: ${summary}. Run /feature-flow-settings to review.`, errors.length > 0 ? "warning" : "info");
+}
+
+/**
+ * Guard: blocks a command if the config gate is closed (errors present).
+ * Returns true if blocked (command should abort).
+ */
+function blockIfGateClosed(ctx: { cwd: string; ui: { notify: (msg: string, type?: "error" | "warning" | "info") => void } }): boolean {
+  const gate = getConfigGateState(ctx.cwd);
+  if (!gate.blocked) return false;
+
+  const errorCodes = gate.diagnostics
+    .filter((d) => d.level === "error")
+    .map((d) => d.code)
+    .join(", ");
+  ctx.ui.notify(
+    `feature-flow config error: ${gate.message} (codes: ${errorCodes}). Fix the errors or run /feature-flow-settings.`,
+    "error",
+  );
+  return true;
+}
 
 function updateFeatureFlowStatus(
   ctx: Pick<ExtensionContext, "ui" | "model">,
@@ -308,7 +362,18 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
 
   // ── Show current phase + active model in status bar ──────────────────────
   pi.on("agent_start", async (_event, ctx) => {
-    await getValidatedPendingExecution();
+    const pending = await getValidatedPendingExecution();
+    const runId = buildRunId(pending);
+    if (runId) {
+      try {
+        updateRun(runId, {
+          model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
+          thinking: pi.getThinkingLevel(),
+        });
+      } catch {
+        // Silent
+      }
+    }
     refreshFeatureFlowStatus(ctx);
   });
 
@@ -326,10 +391,17 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     activeModelLabel = formatModelLabel(ctx.model);
 
+    // Show config diagnostics summary (if any)
+    notifyConfigDiagnostics(ctx);
+
+    // Register command presets from config (idempotent — skips already-registered)
+    const sessionConfig = await loadConfig(ctx.cwd);
+    registerPresetCommands(pi, sessionConfig);
+
     // Only attempt recovery on startup/reload — skip for new/fork sessions
     if (_event.reason !== "startup" && _event.reason !== "reload") return;
 
-    const config = await loadConfig(ctx.cwd);
+    const config = sessionConfig;
     const specsRoot = resolveSpecsRoot(ctx.cwd, config);
     const features = await listFeatureSlugs(specsRoot);
 
@@ -439,6 +511,14 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         }
       }
 
+      // Track run completion in history
+      const runId = buildRunId(pending);
+      if (runId) {
+        const status = parsed.status === "done" ? "ok" : parsed.status === "blocked" ? "error" : "error";
+        const errorMsg = parsed.status !== "done" ? parsed.note : undefined;
+        try { finishRun(runId, status, errorMsg); } catch { /* silent */ }
+      }
+
       setPendingExecution(undefined);
       if ("specsRoot" in pending && "feature" in pending) {
         await clearCheckpoint(
@@ -454,6 +534,9 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         );
 
         if (parsed.status !== "done") {
+          // Track blocked/needs-fix for feature-plan
+          const planRunId = `${pending.feature}/plan`;
+          try { finishRun(planRunId, "error", parsed.note); } catch { /* silent */ }
           ctx.ui.notify(
             `Feature planning for ${pending.feature}: ${label}`,
             parsed.status === "blocked" ? "warning" : "info",
@@ -466,6 +549,9 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         emitInfo(pi, renderValidation(validation));
 
         if (!validation.valid) {
+          // Track validation failure
+          const planRunId = `${pending.feature}/plan`;
+          try { finishRun(planRunId, "error", "validation failed"); } catch { /* silent */ }
           ctx.ui.notify(
             `Feature ${pending.feature} was planned but failed validation. Check the files.`,
             "warning",
@@ -542,6 +628,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
           pending.cwd,
           pending.specsRoot,
           pending.phase,
+          "profileName" in pending ? pending.profileName : undefined,
         );
         return;
       }
@@ -579,6 +666,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
             pending.cwd,
             pending.specsRoot,
             pending.phase,
+            "profileName" in pending ? pending.profileName : undefined,
             cumulativeUsage,
           );
           return;
@@ -594,6 +682,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
             pending.cwd,
             pending.specsRoot,
             pending.phase,
+            "profileName" in pending ? pending.profileName : undefined,
             cumulativeUsage,
           );
           return;
@@ -642,6 +731,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         ctx.ui.notify("Agent is busy. Wait until it finishes.", "warning");
         return;
       }
+      if (blockIfGateClosed(ctx)) return;
 
       const trimmed = args.trim();
       const config = await loadConfig(ctx.cwd);
@@ -693,6 +783,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       const planPending = { kind: "feature-plan" as const, feature, cwd: ctx.cwd, specsRoot };
       setPendingExecution(planPending);
       await persistCheckpoint(planPending);
+      trackPhaseStart(planPending);
       refreshFeatureFlowStatus(ctx);
       await applyRoleRuntimeConfig(pi, ctx, config, "planner");
       refreshFeatureFlowStatus(ctx);
@@ -744,6 +835,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         ctx.ui.notify("Agent is busy. Wait until it finishes.", "warning");
         return;
       }
+      if (blockIfGateClosed(ctx)) return;
 
       const config = await loadConfig(ctx.cwd);
       const specsRoot = resolveSpecsRoot(ctx.cwd, config);
@@ -775,6 +867,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         ctx.ui.notify("Agent is busy. Wait until it finishes.", "warning");
         return;
       }
+      if (blockIfGateClosed(ctx)) return;
 
       const config = await loadConfig(ctx.cwd);
       const specsRoot = resolveSpecsRoot(ctx.cwd, config);
@@ -993,6 +1086,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     description: "Validate spec files, dependencies, and ticket structure",
     getArgumentCompletions: createFeatureCompletions,
     handler: async (args, ctx: CommandContext) => {
+      if (blockIfGateClosed(ctx)) return;
       const config = await loadConfig(ctx.cwd);
       const specsRoot = resolveSpecsRoot(ctx.cwd, config);
       const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
@@ -1002,11 +1096,150 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       emitInfo(pi, renderValidation(validation));
     },
   });
+
+  // ── /feature-flow-status ──────────────────────────────────────────────────
+  pi.registerCommand("feature-flow-status", {
+    description: "Show feature-flow run history: active runs, recent executions, and selected run details",
+    handler: async (_args, ctx: CommandContext) => {
+      const component = new FeatureFlowStatusComponent({
+        onClose: () => { /* panel closed */ },
+        onRender: (panel) => emitInfo(pi, panel),
+      });
+      component.start();
+    },
+  });
+
+  // ── /feature-flow-settings ───────────────────────────────────────────────
+  pi.registerCommand("feature-flow-settings", {
+    description: "Show feature-flow effective config and diagnostics",
+    handler: async (_args, ctx: CommandContext) => {
+      const store = createRuntimeConfigStore(ctx.cwd);
+      new FeatureFlowSettingsComponent({
+        config: store.getConfig(),
+        gateState: store.getGateState(),
+        onClose: () => { /* panel closed */ },
+        onRender: (panel) => emitInfo(pi, panel),
+      });
+    },
+  });
 }
 
-// ─── Internal helpers ─────────────────────────────────────────────────────────
+// ─── Preset command registration ─────────────────────────────────────────────────
 
 type GovernancePhase = "PLANNER" | "TESTER" | "WORKER" | "REVIEWER" | "CHIEF" | "UNKNOWN";
+
+const registeredPresetCommands = new Set<string>();
+
+/**
+ * Deep-merges preset overrides into a base config (shallow copy, nested merge for agents).
+ * Returns a new config object without mutating the original.
+ */
+function applyPreset(
+  base: FeatureFlowConfig,
+  preset: CommandPreset,
+): FeatureFlowConfig {
+  return {
+    ...base,
+    tdd: preset.tdd ?? base.tdd,
+    agents: {
+      ...base.agents,
+      ...Object.fromEntries(
+        Object.entries(preset.agents ?? {}).map(([role, agentOverride]) => [
+          role,
+          { ...base.agents?.[role as FeatureAgentRole], ...agentOverride },
+        ]),
+      ),
+    },
+  };
+}
+
+/**
+ * Register all command presets from config as slash commands.
+ * Idempotent: skips commands already registered in this session.
+ */
+function registerPresetCommands(pi: ExtensionAPI, config: FeatureFlowConfig): void {
+  const presets = config.commands ?? {};
+  for (const [cmdName, preset] of Object.entries(presets)) {
+    if (registeredPresetCommands.has(cmdName)) continue;
+    registeredPresetCommands.add(cmdName);
+
+    pi.registerCommand(cmdName, {
+      description: preset.description ?? `Run feature flow with ${cmdName} preset`,
+      handler: async (args, ctx: CommandContext) => {
+        if (!ctx.isIdle()) {
+          ctx.ui.notify("Agent is busy. Wait until it finishes.", "warning");
+          return;
+        }
+        if (blockIfGateClosed(ctx)) return;
+
+        const baseConfig = await loadConfig(ctx.cwd);
+        const mergedConfig = applyPreset(baseConfig, preset);
+
+        const specsRoot = resolveSpecsRoot(ctx.cwd, mergedConfig);
+        const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
+        if (!feature) return;
+
+        try {
+          await runNextTicketFlowWithConfig(pi, feature, ctx, mergedConfig);
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : String(error);
+          ctx.ui.notify(`${cmdName} error: ${message}`, "error");
+          emitInfo(pi, `Error in ${cmdName}: ${message}`);
+        }
+      },
+    });
+  }
+}
+
+/**
+ * Run next ticket with an overridden config (for preset commands).
+ */
+async function runNextTicketFlowWithConfig(
+  pi: ExtensionAPI,
+  feature: string,
+  ctx: CommandContext,
+  config: FeatureFlowConfig,
+): Promise<void> {
+  if (!(await validateBeforeExecution(pi, feature, resolveSpecsRoot(ctx.cwd, config), ctx))) return;
+  const registry = await loadRegistry(resolveSpecsRoot(ctx.cwd, config), feature);
+  const next = findNextAvailableTicket(registry);
+  if (!next) {
+    emitInfo(pi, `No pending tickets for **${feature}**.`);
+    return;
+  }
+  emitInfo(pi, `Running **${next.id}** with preset config…`);
+  startTicketRun(registry, next.id, "start");
+  await saveRegistry(resolveSpecsRoot(ctx.cwd, config), feature, registry);
+
+  // Merge profile on top of preset config (preset wins over profile).
+  // Profile extraction reads the ticket file; errors are silent — profile not applied.
+  const specsRoot = resolveSpecsRoot(ctx.cwd, config);
+  const ticketPath = path.join(specsRoot, feature, "tickets", `${next.id}.md`);
+  let effectiveConfig: FeatureFlowConfig = config;
+  try {
+    const ticketContent = await fsPromises.readFile(ticketPath, "utf8");
+    const match = ticketContent.match(/^\s*-\s*[Pp]rofile:\s*(\S+)/m);
+    const profileName = match ? match[1] : undefined;
+    if (profileName && config.profiles?.[profileName]) {
+      const profileAgents = config.profiles[profileName]!.agents ?? {};
+      effectiveConfig = {
+        ...config,
+        agents: { ...config.agents },
+      };
+      for (const [role, agentOverride] of Object.entries(profileAgents)) {
+        effectiveConfig.agents = effectiveConfig.agents ?? {};
+        effectiveConfig.agents[role as FeatureAgentRole] = {
+          ...effectiveConfig.agents?.[role as FeatureAgentRole],
+          ...agentOverride,
+        };
+      }
+    }
+  } catch {
+    // Profile not applied — use preset config as-is
+  }
+
+  await launchTicketExecution(pi, ctx, feature, next.id, ctx.cwd, specsRoot, "start", effectiveConfig);
+}
 
 type GovernanceContext = {
   phase: GovernancePhase;
@@ -1402,40 +1635,63 @@ async function applyRoleRuntimeConfig(
   ctx: RoleRuntimeContext | undefined,
   config: Awaited<ReturnType<typeof loadConfig>>,
   role: FlowRole,
+  profileName?: string,
 ): Promise<void> {
   if (!ctx) return;
 
-  const roleConfig = config.agents?.[role];
+  // Merge profile overlay into config agents if a profile is specified
+  const profileAgents = profileName && config.profiles?.[profileName]?.agents;
+  const mergedAgents = profileAgents
+    ? { ...config.agents, ...profileAgents }
+    : config.agents;
+  const roleConfig = mergedAgents?.[role];
   if (!roleConfig) return;
 
-  const thinkingLabel = roleConfig.thinking ? ` | thinking:${roleConfig.thinking}` : "";
+  // Resolve tier → concrete model (if applicable)
+  const resolved = resolveModelForRole(config, role);
+
+  // Determine effective model string for display and registry lookup
+  const effectiveModel: string | undefined = resolved?.model ?? roleConfig.model;
+  const effectiveThinking = resolved?.thinking ?? roleConfig.thinking;
+
+  const thinkingLabel = effectiveThinking ? ` | thinking:${effectiveThinking}` : "";
   const currentModelLabel = formatModelLabel(ctx.model);
   const configuredModelLabel = getConfiguredModelLabel(config, role, ctx.model?.provider);
 
-  const modelRef = parseConfiguredModelRef(roleConfig.model, ctx.model?.provider);
+  const modelRef = parseConfiguredModelRef(effectiveModel, ctx.model?.provider);
   if (modelRef) {
     const targetModel = ctx.modelRegistry.find(modelRef.provider, modelRef.modelId);
     if (!targetModel) {
-      ctx.ui.notify(`feature-flow ${role}: configured model not found: ${roleConfig.model}`, "warning");
+      // Build a descriptive message including tier info if available
+      const tierNote = resolved?.source === "tier" && roleConfig.model !== effectiveModel
+        ? ` (via ${roleConfig.model} tier)`
+        : "";
+      ctx.ui.notify(`feature-flow ${role}: configured model not found: ${effectiveModel}${tierNote}`, "warning");
     } else if (!ctx.model || ctx.model.provider !== targetModel.provider || ctx.model.id !== targetModel.id) {
       const success = await pi.setModel(targetModel);
+      const tierNote = resolved?.source === "tier" && roleConfig.model !== effectiveModel
+        ? ` via ${roleConfig.model} tier`
+        : "";
       if (!success) {
-        ctx.ui.notify(`feature-flow ${role}: could not switch to ${roleConfig.model} (missing API key?)`, "warning");
+        ctx.ui.notify(`feature-flow ${role}: could not switch to ${effectiveModel}${tierNote} (missing API key?)`, "warning");
       } else {
         ctx.ui.notify(
-          `feature-flow ${role}: model switched ${currentModelLabel} → ${targetModel.provider}/${targetModel.id}${thinkingLabel}`,
+          `feature-flow ${role}: model switched ${currentModelLabel} → ${targetModel.provider}/${targetModel.id}${thinkingLabel}${tierNote}`,
           "info",
         );
       }
     } else {
-      ctx.ui.notify(`feature-flow ${role}: using model ${configuredModelLabel ?? currentModelLabel}${thinkingLabel}`, "info");
+      const tierNote = resolved?.source === "tier" && roleConfig.model !== effectiveModel
+        ? ` (via ${roleConfig.model} tier)`
+        : "";
+      ctx.ui.notify(`feature-flow ${role}: using model ${configuredModelLabel ?? currentModelLabel}${thinkingLabel}${tierNote}`, "info");
     }
   } else {
     ctx.ui.notify(`feature-flow ${role}: using current model ${currentModelLabel}${thinkingLabel}`, "info");
   }
 
-  if (roleConfig.thinking) {
-    pi.setThinkingLevel(roleConfig.thinking);
+  if (effectiveThinking) {
+    pi.setThinkingLevel(effectiveThinking);
   }
 }
 
@@ -1521,6 +1777,67 @@ async function startPreparedNextTicket(
   await launchTicketExecution(pi, ctx, feature, next.id, cwd, specsRoot, mode);
 }
 
+// ─── Run history tracking helpers ────────────────────────────────────────────────
+
+/**
+ * Build a runId string from a pending execution state.
+ * Format: "feature/plan" for planning, "feature/ticketId/phase" for ticket execution.
+ */
+function buildRunId(
+  pending: ReturnType<typeof getPendingExecution>,
+): string | undefined {
+  if (!pending || !("feature" in pending)) return undefined;
+  const feature = (pending as { feature: string }).feature;
+  if (pending.kind === "feature-plan") return `${feature}/plan`;
+  const ticketId = ("ticketId" in pending ? (pending as { ticketId: string }).ticketId : undefined);
+  if (!ticketId) return undefined;
+  const phase: Phase =
+    pending.kind === "ticket-tester"
+      ? "tester"
+      : pending.kind === "ticket-execution"
+        ? ((pending as { executionRole: string }).executionRole as Phase)
+        : "worker";
+  return `${feature}/${ticketId}/${phase}`;
+}
+
+/**
+ * Track the start of a phase: call startRun and return the runId.
+ * Failures are silent — never block the flow.
+ */
+function trackPhaseStart(pending: NonNullable<ReturnType<typeof getPendingExecution>>): string | undefined {
+  const runId = buildRunId(pending);
+  if (!runId) return undefined;
+
+  const phase: Phase =
+    pending?.kind === "ticket-tester"
+      ? "tester"
+      : pending?.kind === "ticket-execution"
+        ? ((pending as { executionRole: string }).executionRole as Phase)
+        : pending?.kind === "feature-plan"
+          ? "planner"
+          : "worker";
+
+  try {
+    const feature = "feature" in pending ? (pending as { feature: string }).feature : "";
+    const ticketId = "ticketId" in pending ? (pending as { ticketId?: string }).ticketId : undefined;
+    startRun(runId, {
+      feature,
+      ticketId: ticketId ?? "plan",
+      phase,
+    });
+  } catch {
+    // Silent
+  }
+  return runId;
+}
+
+/**
+ * Track phase start right before pi.sendUserMessage in each launch function.
+ */
+function trackAndSend(pi: ExtensionAPI, runId: string | undefined, message: string): void {
+  pi.sendUserMessage(message);
+}
+
 async function launchTicketExecution(
   pi: ExtensionAPI,
   ctx: RoleRuntimeContext | undefined,
@@ -1529,14 +1846,26 @@ async function launchTicketExecution(
   cwd: string,
   specsRoot: string,
   phase: "start" | "resume" | "retry",
+  effectiveConfig?: FeatureFlowConfig,
 ) {
-  const config = await loadConfig(cwd);
+  // Extract profile from ticket file
+  const ticketPath = path.join(specsRoot, feature, "tickets", `${ticketId}.md`);
+  let profileName: string | undefined;
+  try {
+    const ticketContent = await fsPromises.readFile(ticketPath, "utf8");
+    const match = ticketContent.match(/^\s*-\s*[Pp]rofile:\s*(\S+)/m);
+    profileName = match ? match[1] : undefined;
+  } catch {
+    // Ticket file not found — no profile
+  }
+
+  const config = effectiveConfig ?? (await loadConfig(cwd));
   const tddEnabled = resolveTddEnabled(config);
 
   if (tddEnabled) {
-    await launchTesterPhase(pi, ctx, feature, ticketId, cwd, specsRoot, phase, config);
+    await launchTesterPhase(pi, ctx, feature, ticketId, cwd, specsRoot, phase, profileName, config);
   } else {
-    await launchWorkerChain(pi, ctx, feature, ticketId, cwd, specsRoot, phase, config);
+    await launchWorkerChain(pi, ctx, feature, ticketId, cwd, specsRoot, phase, profileName, config);
   }
 }
 
@@ -1549,10 +1878,11 @@ async function launchTesterPhase(
   cwd: string,
   specsRoot: string,
   phase: "start" | "resume" | "retry",
+  profileName?: string,
   config?: Awaited<ReturnType<typeof loadConfig>>,
 ) {
   const resolvedConfig = config ?? (await loadConfig(cwd));
-  await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "tester");
+  await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "tester", profileName);
   const featureDir = path.join(specsRoot, feature);
   const ticketPath = path.join(featureDir, "tickets", `${ticketId}.md`);
   const notesPath = testerNotesPath(specsRoot, feature, ticketId);
@@ -1566,9 +1896,10 @@ async function launchTesterPhase(
     ...buildSubagentGuidance(resolvedConfig, "execution"),
   ].join("\n");
 
-  const testerPending = { kind: "ticket-tester" as const, feature, ticketId, phase, cwd, specsRoot };
+  const testerPending = { kind: "ticket-tester" as const, feature, ticketId, phase, profileName, cwd, specsRoot };
   setPendingExecution(testerPending);
   await persistCheckpoint(testerPending);
+  trackPhaseStart(testerPending);
   if (ctx) updateFeatureFlowStatus(ctx, formatModelLabel(ctx.model), pi.getThinkingLevel());
   pi.sendUserMessage(message);
 }
@@ -1582,10 +1913,11 @@ async function launchWorkerChain(
   cwd: string,
   specsRoot: string,
   phase: "start" | "resume" | "retry",
+  profileName?: string,
   config?: Awaited<ReturnType<typeof loadConfig>>,
 ) {
   const resolvedConfig = config ?? (await loadConfig(cwd));
-  await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "worker");
+  await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "worker", profileName);
   const featureDir = path.join(specsRoot, feature);
   const ticketPath = path.join(featureDir, "tickets", `${ticketId}.md`);
 
@@ -1625,12 +1957,14 @@ async function launchWorkerChain(
     feature,
     ticketId,
     phase,
+    profileName,
     cwd,
     specsRoot,
     accumulatedUsage: undefined,
   };
   setPendingExecution(execPending);
   await persistCheckpoint(execPending);
+  trackPhaseStart(execPending);
   if (ctx) updateFeatureFlowStatus(ctx, formatModelLabel(ctx.model), pi.getThinkingLevel());
   pi.sendUserMessage(message);
 }
@@ -1643,11 +1977,12 @@ async function launchReviewerPhase(
   cwd: string,
   specsRoot: string,
   phase: "start" | "resume" | "retry",
+  profileName: string | undefined,
   accumulatedUsage: UsageTotals,
   config?: Awaited<ReturnType<typeof loadConfig>>,
 ) {
   const resolvedConfig = config ?? (await loadConfig(cwd));
-  await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "reviewer");
+  await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "reviewer", profileName);
 
   const featureDir = path.join(specsRoot, feature);
   const ticketPath = path.join(featureDir, "tickets", `${ticketId}.md`);
@@ -1680,12 +2015,14 @@ async function launchReviewerPhase(
     feature,
     ticketId,
     phase,
+    profileName,
     cwd,
     specsRoot,
     accumulatedUsage,
   };
   setPendingExecution(execPending);
   await persistCheckpoint(execPending);
+  trackPhaseStart(execPending);
   if (ctx) updateFeatureFlowStatus(ctx, formatModelLabel(ctx.model), pi.getThinkingLevel());
   pi.sendUserMessage(message);
 }
@@ -1698,11 +2035,12 @@ async function launchChiefPhase(
   cwd: string,
   specsRoot: string,
   phase: "start" | "resume" | "retry",
+  profileName: string | undefined,
   accumulatedUsage: UsageTotals,
   config?: Awaited<ReturnType<typeof loadConfig>>,
 ) {
   const resolvedConfig = config ?? (await loadConfig(cwd));
-  await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "chief");
+  await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "chief", profileName);
 
   const featureDir = path.join(specsRoot, feature);
   const ticketPath = path.join(featureDir, "tickets", `${ticketId}.md`);
@@ -1725,6 +2063,7 @@ async function launchChiefPhase(
     feature,
     ticketId,
     phase,
+    profileName,
     cwd,
     specsRoot,
     accumulatedUsage,

@@ -1,6 +1,6 @@
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { FeatureAgentRole, FeatureFlowConfig } from "./types.js";
+import { createRuntimeConfigStore } from "./config-store.js";
 
 // ─── Convention-based constants (not configurable) ───────────────────────────
 
@@ -20,50 +20,10 @@ const MAX_MESSAGES_TO_INSPECT = 6;
 const REQUIRES_LABEL = "Requires";
 const DEPENDENCY_SPLIT_PATTERN = ",";
 
-// ─── Config loading ───────────────────────────────────────────────────────────
-
-const JSON_CONFIG_FILE = ".pi/feature-flow.json";
-
-const DEFAULT_CONFIG: FeatureFlowConfig = {
-  specsRoot: DEFAULT_SPECS_ROOT,
-  tdd: false,
-  execution: {
-    autoStartFirstTicketAfterPlanning: true,
-    autoAdvanceToNextTicket: true,
-  },
-  agents: {
-    planner: {},
-    tester: {},
-    worker: {},
-    reviewer: {},
-    chief: {},
-  },
-};
+// ─── Config loading (delegated to config-store) ──────────────────────────────
 
 export async function loadConfig(cwd: string): Promise<FeatureFlowConfig> {
-  const jsonPath = path.resolve(cwd, JSON_CONFIG_FILE);
-  try {
-    const raw = await fs.readFile(jsonPath, "utf8");
-    const parsed = JSON.parse(raw) as Partial<FeatureFlowConfig>;
-    return normalizeConfig(parsed);
-  } catch {
-    return normalizeConfig({});
-  }
-}
-
-function normalizeConfig(parsed: Partial<FeatureFlowConfig>): FeatureFlowConfig {
-  return {
-    specsRoot: parsed.specsRoot || DEFAULT_SPECS_ROOT,
-    tdd: parsed.tdd ?? false,
-    execution: {
-      ...DEFAULT_CONFIG.execution,
-      ...(parsed.execution || {}),
-    },
-    agents: {
-      ...DEFAULT_CONFIG.agents,
-      ...(parsed.agents || {}),
-    },
-  };
+  return createRuntimeConfigStore(cwd).getConfig();
 }
 
 export function resolveSpecsRoot(cwd: string, config: FeatureFlowConfig): string {

@@ -1,0 +1,19 @@
+{
+  "specsRoot": "./docs/technical-specs",
+  "tdd": false,
+  "execution": {
+    "autoStartFirstTicketAfterPlanning": true,
+    "autoAdvanceToNextTicket": true,
+    "allowExternalToolCalls": false
+  },
+  "agents": {
+    "planner": {},
+    "tester": {},
+    "worker": {},
+    "reviewer": {},
+    "chief": {}
+  },
+  "modelTiers": {},
+  "profiles": {},
+  "commands": {}
+}

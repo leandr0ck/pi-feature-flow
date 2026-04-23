@@ -83,7 +83,30 @@ export type FeatureFlowConfig = {
   execution?: FeatureFlowExecutionConfig;
   /** Per-role agent configuration */
   agents?: Partial<Record<FeatureAgentRole, FeatureAgentConfig>>;
+  /** Named model tiers for reusable model+thinking combos */
+  modelTiers?: Record<string, ModelTierConfig>;
+  /** Skill+model overrides per ticket profile */
+  profiles?: Record<string, ProfileOverlay>;
+  /** Named command presets with override policies */
+  commands?: Record<string, CommandPreset>;
 };
+
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+export interface ModelTierConfig {
+  model: string;
+  thinking?: ThinkingLevel;
+}
+
+export interface CommandPreset {
+  description?: string;
+  tdd?: boolean;
+  agents?: Partial<Record<FeatureAgentRole, FeatureAgentConfig>>;
+}
+
+export interface ProfileOverlay {
+  agents?: Partial<Record<FeatureAgentRole, FeatureAgentConfig>>;
+}
 
 // ─── Execution ───────────────────────────────────────────────────────────────
 
