@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 - **Governance only when active**: tool-call governance now returns early when no feature-flow session is active, allowing normal agent usage without restrictions.
 - **Status bar phase + model + thinking**: status bar now shows `[ticket › PHASE › model:active-model | thinking:level]` including the real active model and current thinking level, refreshed immediately on handoff and on `model_select` events.
 - **Visible model switch feedback**: `applyRoleRuntimeConfig` now emits `notify` messages confirming which model is active per role (including thinking level), making model switches transparent.
+- **Docs and defaults refresh**: README and project guidance now describe the repo as a spec → plan → ticket workflow with durable feature memory and `./docs` as the default specs root.
 
 ## [0.4.0] - 2026-04-21
 

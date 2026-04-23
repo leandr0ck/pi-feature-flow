@@ -44,7 +44,7 @@ describe("feature-ticket-flow config", () => {
     dirs.push(cwd);
 
     const config = await loadConfig(cwd);
-    expect(config.specsRoot).toBe("./docs/technical-specs");
+    expect(config.specsRoot).toBe("./docs");
     expect(config.tdd).toBe(false);
   });
 

@@ -75,7 +75,7 @@ export type FeatureFlowExecutionConfig = {
 };
 
 export type FeatureFlowConfig = {
-  /** Root directory containing feature folders. Default: "./docs/technical-specs" */
+  /** Root directory containing feature folders. Default: "./docs" */
   specsRoot: string;
   /** Enable TDD-oriented execution. Default: false */
   tdd?: boolean;

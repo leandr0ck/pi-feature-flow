@@ -9,7 +9,7 @@ import {
   shouldAutoAdvanceToNextTicket,
   shouldAutoStartFirstTicketAfterPlanning,
 } from "../src/config.js";
-import { createRuntimeConfigStore } from "../src/config-store.js";
+import { createRuntimeConfigStore, ensureConfigFile } from "../src/config-store.js";
 import { startRun, updateRun, finishRun, type Phase } from "../src/run-history.js";
 import { FeatureFlowStatusComponent } from "../src/ui/status.js";
 import { FeatureFlowSettingsComponent } from "../src/ui/settings.js";
@@ -732,6 +732,9 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       }
       if (blockIfGateClosed(ctx)) return;
 
+      // Ensure config file exists with defaults
+      ensureConfigFile(ctx.cwd);
+
       const trimmed = args.trim();
       const config = await loadConfig(ctx.cwd);
       const specsRoot = resolveSpecsRoot(ctx.cwd, config);
@@ -796,6 +799,9 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
   pi.registerCommand("feature-init", {
     description: "Create a feature directory with a stub spec file",
     handler: async (args, ctx: CommandContext) => {
+      // Ensure config file exists with defaults
+      ensureConfigFile(ctx.cwd);
+
       const slug = args.trim();
       if (!slug) {
         ctx.ui.notify("Usage: /init-feature <slug>", "error");
@@ -836,6 +842,9 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       }
       if (blockIfGateClosed(ctx)) return;
 
+      // Ensure config file exists with defaults
+      ensureConfigFile(ctx.cwd);
+
       const config = await loadConfig(ctx.cwd);
       const specsRoot = resolveSpecsRoot(ctx.cwd, config);
       const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
@@ -867,6 +876,9 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         return;
       }
       if (blockIfGateClosed(ctx)) return;
+
+      // Ensure config file exists with defaults
+      ensureConfigFile(ctx.cwd);
 
       const config = await loadConfig(ctx.cwd);
       const specsRoot = resolveSpecsRoot(ctx.cwd, config);

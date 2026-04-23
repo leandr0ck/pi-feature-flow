@@ -1,5 +1,5 @@
 {
-  "specsRoot": "./docs/technical-specs",
+  "specsRoot": "./docs",
   "tdd": false,
   "execution": {
     "autoStartFirstTicketAfterPlanning": true,

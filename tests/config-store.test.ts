@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { createRuntimeConfigStore } from "../src/config-store.js";
+import { createRuntimeConfigStore, ensureConfigFile, getConfigPath, configExists } from "../src/config-store.js";
 
 const TMP_BASE = "/tmp/pi-ffs-test";
 
@@ -25,7 +26,7 @@ describe("config-store", () => {
       await withTempDir(async (cwd) => {
         const store = createRuntimeConfigStore(cwd);
         const cfg = store.getConfig();
-        expect(cfg.specsRoot).toBe("./docs/technical-specs");
+        expect(cfg.specsRoot).toBe("./docs");
         expect(cfg.tdd).toBe(false);
         expect(cfg.execution!.autoStartFirstTicketAfterPlanning).toBe(true);
         expect(cfg.agents!.planner).toEqual({});
@@ -43,7 +44,7 @@ describe("config-store", () => {
         const cfg = store.getConfig();
         expect(cfg.tdd).toBe(true);
         expect(cfg.agents!.worker).toEqual({ model: "cheap" });
-        expect(cfg.specsRoot).toBe("./docs/technical-specs");
+        expect(cfg.specsRoot).toBe("./docs");
         expect(cfg.agents!.planner).toEqual({});
       });
     });
@@ -127,6 +128,83 @@ describe("config-store", () => {
         expect(typeof store.getConfig).toBe("function");
         expect(typeof store.getGateState).toBe("function");
         expect(typeof store.reloadConfig).toBe("function");
+      });
+    });
+  });
+
+  describe("ensureConfigFile", () => {
+    it("creates config file with defaults when it doesn't exist", async () => {
+      await withTempDir(async (cwd) => {
+        expect(configExists(cwd)).toBe(false);
+
+        const createdPath = ensureConfigFile(cwd);
+
+        expect(createdPath).toBe(getConfigPath(cwd));
+        expect(existsSync(createdPath)).toBe(true);
+        expect(configExists(cwd)).toBe(true);
+
+        const content = await readFile(createdPath, "utf8");
+        const parsed = JSON.parse(content);
+        expect(parsed.specsRoot).toBe("./docs");
+        expect(parsed.tdd).toBe(false);
+        expect(parsed.execution).toEqual({
+          autoStartFirstTicketAfterPlanning: true,
+          autoAdvanceToNextTicket: true,
+          allowExternalToolCalls: false,
+        });
+      });
+    });
+
+    it("does not overwrite existing config file", async () => {
+      await withTempDir(async (cwd) => {
+        await mkdir(path.join(cwd, ".pi"), { recursive: true });
+        const configPath = path.join(cwd, ".pi", "feature-flow.json");
+        const customConfig = { specsRoot: "./custom-docs", tdd: true };
+        await writeFile(configPath, JSON.stringify(customConfig));
+
+        const createdPath = ensureConfigFile(cwd);
+
+        expect(createdPath).toBe(configPath);
+        const content = await readFile(configPath, "utf8");
+        const parsed = JSON.parse(content);
+        expect(parsed.specsRoot).toBe("./custom-docs");
+        expect(parsed.tdd).toBe(true);
+      });
+    });
+
+    it("creates .pi directory if it doesn't exist", async () => {
+      await withTempDir(async (cwd) => {
+        expect(existsSync(path.join(cwd, ".pi"))).toBe(false);
+        expect(existsSync(path.join(cwd, ".pi", "feature-flow.json"))).toBe(false);
+
+        ensureConfigFile(cwd);
+
+        expect(existsSync(path.join(cwd, ".pi"))).toBe(true);
+        expect(existsSync(path.join(cwd, ".pi", "feature-flow.json"))).toBe(true);
+      });
+    });
+  });
+
+  describe("getConfigPath", () => {
+    it("returns the correct path to the config file", async () => {
+      await withTempDir(async (cwd) => {
+        const configPath = getConfigPath(cwd);
+        expect(configPath).toBe(path.resolve(cwd, ".pi", "feature-flow.json"));
+      });
+    });
+  });
+
+  describe("configExists", () => {
+    it("returns false when config doesn't exist", async () => {
+      await withTempDir(async (cwd) => {
+        expect(configExists(cwd)).toBe(false);
+      });
+    });
+
+    it("returns true when config exists", async () => {
+      await withTempDir(async (cwd) => {
+        ensureConfigFile(cwd);
+        expect(configExists(cwd)).toBe(true);
       });
     });
   });

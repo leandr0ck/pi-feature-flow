@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { FeatureFlowConfig } from "./types.js";
@@ -55,7 +55,34 @@ function deepMerge<T extends Record<string, unknown>>(base: T, overrides: Partia
 
 const USER_CONFIG_FILE = ".pi/feature-flow.json";
 
+// ─── Default config values ───────────────────────────────────────────────────
+
+const DEFAULT_SPECS_ROOT = "./docs";
+const DEFAULT_TDD = false;
+const DEFAULT_EXECUTION = {
+  autoStartFirstTicketAfterPlanning: true,
+  autoAdvanceToNextTicket: true,
+  allowExternalToolCalls: false,
+};
+
 export function createRuntimeConfigStore(cwd: string): RuntimeConfigStore {
+  // ── Fallback defaults (in-memory, used when default-config.json is missing) ──
+  const fallbackDefaults: Record<string, unknown> = {
+    specsRoot: DEFAULT_SPECS_ROOT,
+    tdd: DEFAULT_TDD,
+    execution: DEFAULT_EXECUTION,
+    agents: {
+      planner: {},
+      tester: {},
+      worker: {},
+      reviewer: {},
+      chief: {},
+    },
+    modelTiers: {},
+    profiles: {},
+    commands: {},
+  };
+
   // ── Load defaults (one-time, at construction) ─────────────────────────────
   const defaultsPath = resolveDefaultConfigPath();
   let defaults: Record<string, unknown>;
@@ -64,26 +91,8 @@ export function createRuntimeConfigStore(cwd: string): RuntimeConfigStore {
     const rawDefaults = readFileSync(defaultsPath, "utf8");
     defaults = JSON.parse(rawDefaults);
   } catch {
-    // If defaults file is missing, fall back to a minimal in-memory default
-    defaults = {
-      specsRoot: "./docs/technical-specs",
-      tdd: false,
-      execution: {
-        autoStartFirstTicketAfterPlanning: true,
-        autoAdvanceToNextTicket: true,
-        allowExternalToolCalls: false,
-      },
-      agents: {
-        planner: {},
-        tester: {},
-        worker: {},
-        reviewer: {},
-        chief: {},
-      },
-      modelTiers: {},
-      profiles: {},
-      commands: {},
-    };
+    // If defaults file is missing, fall back to fallbackDefaults
+    defaults = fallbackDefaults;
   }
 
   // ── Load user config (may not exist) ──────────────────────────────────────
@@ -126,4 +135,58 @@ export function createRuntimeConfigStore(cwd: string): RuntimeConfigStore {
       loadUserConfig();
     },
   };
+}
+
+// ─── Config file creation ─────────────────────────────────────────────────────
+
+const DEFAULT_CONFIG_TEMPLATE = {
+  specsRoot: DEFAULT_SPECS_ROOT,
+  tdd: DEFAULT_TDD,
+  execution: DEFAULT_EXECUTION,
+  agents: {
+    planner: {},
+    tester: {},
+    worker: {},
+    reviewer: {},
+    chief: {},
+  },
+  modelTiers: {},
+  profiles: {},
+  commands: {},
+};
+
+/**
+ * Creates the default config file at `.pi/feature-flow.json` if it doesn't exist.
+ * Also ensures the `.pi` directory exists.
+ * Returns the path to the config file.
+ */
+export function ensureConfigFile(cwd: string): string {
+  const configDir = path.resolve(cwd, ".pi");
+  const configPath = path.resolve(configDir, "feature-flow.json");
+
+  if (existsSync(configPath)) {
+    return configPath;
+  }
+
+  // Ensure .pi directory exists
+  mkdirSync(configDir, { recursive: true });
+
+  // Write default config
+  writeFileSync(configPath, JSON.stringify(DEFAULT_CONFIG_TEMPLATE, null, 2) + "\n", "utf8");
+
+  return configPath;
+}
+
+/**
+ * Returns the path to the user config file.
+ */
+export function getConfigPath(cwd: string): string {
+  return path.resolve(cwd, USER_CONFIG_FILE);
+}
+
+/**
+ * Checks if the user config file exists.
+ */
+export function configExists(cwd: string): boolean {
+  return existsSync(getConfigPath(cwd));
 }
