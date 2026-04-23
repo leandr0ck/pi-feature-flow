@@ -34,7 +34,7 @@ export async function validateFeature(specsRoot: string, feature: string): Promi
       issues.push({
         severity: "error",
         code: "missing-spec-file",
-        message: `Missing required file: ${fileName} — run /plan-feature to generate it.`,
+        message: `Missing required file: ${fileName} — run /feature-plan to generate it.`,
         filePath,
       });
     }

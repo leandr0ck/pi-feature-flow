@@ -722,10 +722,9 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     }
   });
 
-  // ── /plan-feature ──────────────────────────────────────────────────────────
-  pi.registerCommand("plan-feature", {
+  // ── /feature-plan ──────────────────────────────────────────────────────────
+  pi.registerCommand("feature-plan", {
     description: "Plan a feature from an existing spec document (creates execution plan + tickets)",
-    getArgumentCompletions: createFeatureCompletions,
     handler: async (args, ctx: CommandContext) => {
       if (!ctx.isIdle()) {
         ctx.ui.notify("Agent is busy. Wait until it finishes.", "warning");
@@ -759,8 +758,8 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
             "",
             `Expected: ${specPath}`,
             "",
-            "Create your spec document at that path, then run `/plan-feature ${feature}` again.",
-            "Or run `/init-feature ${feature}` to scaffold a stub spec.",
+            "Create your spec document at that path, then run `/feature-plan ${feature}` again.",
+            "Or run `/feature-init ${feature}` to scaffold a stub spec.",
           ].join("\n"),
         );
         return;
@@ -793,8 +792,8 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     },
   });
 
-  // ── /init-feature ──────────────────────────────────────────────────────────
-  pi.registerCommand("init-feature", {
+  // ── /feature-init ──────────────────────────────────────────────────────────
+  pi.registerCommand("feature-init", {
     description: "Create a feature directory with a stub spec file",
     handler: async (args, ctx: CommandContext) => {
       const slug = args.trim();
@@ -815,7 +814,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
             `Initialized **${slug}**.`,
             `- Created: ${path.join(featureDir, "01-master-spec.md")}`,
             "",
-            "Fill in the spec, then run `/plan-feature ${slug}` to generate tickets.",
+            "Fill in the spec, then run `/feature-plan ${slug}` to generate tickets.",
           ].join("\n"),
         );
       } else {
@@ -826,8 +825,8 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     },
   });
 
-  // ── /start-feature ─────────────────────────────────────────────────────────
-  pi.registerCommand("start-feature", {
+  // ── /feature-start ─────────────────────────────────────────────────────────
+  pi.registerCommand("feature-start", {
     description: "Show feature status and start or resume the next ticket",
     getArgumentCompletions: createFeatureCompletions,
     handler: async (args, ctx: CommandContext) => {
@@ -858,8 +857,8 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     },
   });
 
-  // ── /next-ticket ───────────────────────────────────────────────────────────
-  pi.registerCommand("next-ticket", {
+  // ── /feature-next ──────────────────────────────────────────────────────────
+  pi.registerCommand("feature-next", {
     description: "Pick and execute the next available ticket automatically",
     getArgumentCompletions: createFeatureCompletions,
     handler: async (args, ctx: CommandContext) => {
@@ -878,14 +877,14 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         await runNextTicketFlow(pi, feature, ctx);
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
-        ctx.ui.notify(`next-ticket error: ${message}`, "error");
-        emitInfo(pi, `Error in /next-ticket: ${message}`);
+        ctx.ui.notify(`feature-next error: ${message}`, "error");
+        emitInfo(pi, `Error in /feature-next: ${message}`);
       }
     },
   });
 
-  // ── /ticket-done ───────────────────────────────────────────────────────────
-  pi.registerCommand("ticket-done", {
+  // ── /feature-done ───────────────────────────────────────────────────────────
+  pi.registerCommand("feature-done", {
     description: "Mark the current in-progress ticket as done",
     getArgumentCompletions: createFeatureCompletions,
     handler: async (args, ctx: CommandContext) => {
@@ -919,8 +918,8 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     },
   });
 
-  // ── /ticket-blocked ────────────────────────────────────────────────────────
-  pi.registerCommand("ticket-blocked", {
+  // ── /feature-blocked ────────────────────────────────────────────────────────
+  pi.registerCommand("feature-blocked", {
     description: "Mark the current in-progress ticket as blocked",
     getArgumentCompletions: createFeatureCompletions,
     handler: async (args, ctx: CommandContext) => {
@@ -958,8 +957,8 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     },
   });
 
-  // ── /ticket-needs-fix ──────────────────────────────────────────────────────
-  pi.registerCommand("ticket-needs-fix", {
+  // ── /feature-needs-fix ──────────────────────────────────────────────────────
+  pi.registerCommand("feature-needs-fix", {
     description: "Mark the current in-progress ticket as needs-fix and optionally retry",
     getArgumentCompletions: createFeatureCompletions,
     handler: async (args, ctx: CommandContext) => {
@@ -1007,8 +1006,8 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     },
   });
 
-  // ── /ticket-status ─────────────────────────────────────────────────────────
-  pi.registerCommand("ticket-status", {
+  // ── /feature-status ────────────────────────────────────────────────────────
+  pi.registerCommand("feature-status", {
     description: "Show feature ticket progress from the registry",
     getArgumentCompletions: createFeatureCompletions,
     handler: async (args, ctx: CommandContext) => {
@@ -1081,8 +1080,8 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     },
   });
 
-  // ── /ticket-validate ───────────────────────────────────────────────────────
-  pi.registerCommand("ticket-validate", {
+  // ── /feature-validate ──────────────────────────────────────────────────────
+  pi.registerCommand("feature-validate", {
     description: "Validate spec files, dependencies, and ticket structure",
     getArgumentCompletions: createFeatureCompletions,
     handler: async (args, ctx: CommandContext) => {

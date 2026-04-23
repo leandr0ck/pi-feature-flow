@@ -81,7 +81,7 @@ export async function scaffoldSpecFile(featureDir: string, feature: string): Pro
       "## Acceptance Criteria",
       "- Add machine-testable acceptance criteria here.",
       "",
-      "> Fill in this spec, then run `/plan-feature ${feature}` to generate tickets.",
+      "> Fill in this spec, then run `/feature-plan ${feature}` to generate tickets.",
     ].join("\n"),
     "utf8",
   );

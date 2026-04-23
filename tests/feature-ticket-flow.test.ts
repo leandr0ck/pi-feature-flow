@@ -136,14 +136,14 @@ describe("feature-ticket-flow integration", () => {
 
   // ── /init-feature ──────────────────────────────────────────────────────────
 
-  it("scaffolds a feature directory with a stub spec via /init-feature", async () => {
+  it("scaffolds a feature directory with a stub spec via /feature-init", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
     });
 
     patchHarnessCompatibility(t);
-    await t.run(when("/init-feature demo-feature", []));
+    await t.run(when("/feature-init demo-feature", []));
 
     const { featureRoot, ticketsRoot } = await featurePaths(t.cwd, "demo-feature");
     const specContent = await readFile(path.join(featureRoot, "01-master-spec.md"), "utf8");
@@ -156,7 +156,7 @@ describe("feature-ticket-flow integration", () => {
 
   // ── /plan-feature prompt ───────────────────────────────────────────────────
 
-  it("sends the planner prompt when /plan-feature is run on a feature with a spec", async () => {
+  it("sends the planner prompt when /feature-plan is run on a feature with a spec", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
@@ -171,7 +171,7 @@ describe("feature-ticket-flow integration", () => {
     );
 
     patchHarnessCompatibility(t);
-    await t.run(when("/plan-feature my-feature", []));
+    await t.run(when("/feature-plan my-feature", []));
     await settleSession(t);
 
     const userMessages = t.events.messages
@@ -187,7 +187,7 @@ describe("feature-ticket-flow integration", () => {
     expect(userMessages).toContain("APPROVED, BLOCKED, or NEEDS-FIX");
   });
 
-  it("switches to the configured planner model before sending /plan-feature work", async () => {
+  it("switches to the configured planner model before sending /feature-plan work", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
@@ -208,7 +208,7 @@ describe("feature-ticket-flow integration", () => {
     );
 
     patchHarnessCompatibility(t);
-    await t.run(when("/plan-feature planner-model", []));
+    await t.run(when("/feature-plan planner-model", []));
     await settleSession(t);
 
     expect(currentModelRef(t)).toBe("openai/gpt-5");
@@ -235,7 +235,7 @@ describe("feature-ticket-flow integration", () => {
     );
 
     patchHarnessCompatibility(t);
-    await t.run(when("/plan-feature tdd-feature", []));
+    await t.run(when("/feature-plan tdd-feature", []));
     await settleSession(t);
 
     const userMessages = t.events.messages
@@ -246,7 +246,7 @@ describe("feature-ticket-flow integration", () => {
     expect(userMessages).toContain("TDD is enabled");
   });
 
-  it("errors when /plan-feature is run with no spec file", async () => {
+  it("errors when /feature-plan is run with no spec file", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
@@ -257,7 +257,7 @@ describe("feature-ticket-flow integration", () => {
     // no 01-master-spec.md
 
     patchHarnessCompatibility(t);
-    await t.run(when("/plan-feature no-spec", []));
+    await t.run(when("/feature-plan no-spec", []));
     await settleSession(t);
 
     const notifications = t.events.uiCallsFor("notify");
@@ -268,7 +268,7 @@ describe("feature-ticket-flow integration", () => {
 
   // ── Validation ─────────────────────────────────────────────────────────────
 
-  it("blocks /start-feature when the execution plan is missing", async () => {
+  it("blocks /feature-start when the execution plan is missing", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
@@ -282,7 +282,7 @@ describe("feature-ticket-flow integration", () => {
     // no 02-execution-plan.md
 
     patchHarnessCompatibility(t);
-    await t.run(when("/start-feature no-plan", []));
+    await t.run(when("/feature-start no-plan", []));
 
     const notifications = t.events.uiCallsFor("notify");
     expect(notifications.some((call) => String(call.args[0]).includes("failed validation"))).toBe(
@@ -290,7 +290,7 @@ describe("feature-ticket-flow integration", () => {
     );
   });
 
-  it("blocks /start-feature when a ticket has a missing dependency", async () => {
+  it("blocks /feature-start when a ticket has a missing dependency", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
@@ -312,7 +312,7 @@ describe("feature-ticket-flow integration", () => {
     );
 
     patchHarnessCompatibility(t);
-    await t.run(when("/start-feature broken-deps", []));
+    await t.run(when("/feature-start broken-deps", []));
 
     const notifications = t.events.uiCallsFor("notify");
     expect(notifications.some((call) => String(call.args[0]).includes("failed validation"))).toBe(
@@ -320,7 +320,7 @@ describe("feature-ticket-flow integration", () => {
     );
   });
 
-  it("blocks /start-feature when a ticket is missing required sections", async () => {
+  it("blocks /feature-start when a ticket is missing required sections", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
@@ -343,7 +343,7 @@ describe("feature-ticket-flow integration", () => {
     );
 
     patchHarnessCompatibility(t);
-    await t.run(when("/start-feature template-broken", []));
+    await t.run(when("/feature-start template-broken", []));
 
     const notifications = t.events.uiCallsFor("notify");
     expect(notifications.some((call) => String(call.args[0]).includes("failed validation"))).toBe(
@@ -353,7 +353,7 @@ describe("feature-ticket-flow integration", () => {
 
   // ── Ticket execution ───────────────────────────────────────────────────────
 
-  it("sends execution prompt when /next-ticket is run", async () => {
+  it("sends execution prompt when /feature-next is run", async () => {
     t = await createTestSession({
       extensions: [EXTENSION_PATH],
       mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
@@ -366,7 +366,7 @@ describe("feature-ticket-flow integration", () => {
 
     patchHarnessCompatibility(t);
     await t.run(
-      when("/next-ticket demo", []),
+      when("/feature-next demo", []),
     );
     await settleSession(t);
 
@@ -397,7 +397,7 @@ describe("feature-ticket-flow integration", () => {
     );
 
     patchHarnessCompatibility(t);
-    await t.run(when("/next-ticket tester-model", []));
+    await t.run(when("/feature-next tester-model", []));
     await settleSession(t);
 
     expect(currentModelRef(t)).toBe("openai/gpt-5-mini");
@@ -427,7 +427,7 @@ describe("feature-ticket-flow integration", () => {
     );
 
     patchHarnessCompatibility(t);
-    await t.run(when("/next-ticket handoff-models", []));
+    await t.run(when("/feature-next handoff-models", []));
     await settleSession(t, 200);
 
     const { specsRoot } = await featurePaths(t.cwd, "handoff-models");
@@ -456,7 +456,7 @@ describe("feature-ticket-flow integration", () => {
     );
 
     patchHarnessCompatibility(t);
-    await t.run(when("/next-ticket roles-check", []));
+    await t.run(when("/feature-next roles-check", []));
     await settleSession(t);
 
     const userMessages = t.events.messages
@@ -499,7 +499,7 @@ describe("feature-ticket-flow integration", () => {
     await writeFile(contextPath, "# Worker Context — STK-001\n\n## Continuation notes\n- retry me\n", "utf8");
 
     patchHarnessCompatibility(t);
-    await t.run(when("/next-ticket retry-tdd-handoff", []));
+    await t.run(when("/feature-next retry-tdd-handoff", []));
     await settleSession(t, 250);
 
     const checkpoint = await loadCheckpoint(specsRoot, "retry-tdd-handoff");
@@ -536,7 +536,7 @@ describe("feature-ticket-flow integration", () => {
     );
 
     patchHarnessCompatibility(t);
-    await t.run(when("/next-ticket phase-models", []));
+    await t.run(when("/feature-next phase-models", []));
     await settleSession(t, 250);
 
     const userMessages = t.events.messages
@@ -562,7 +562,7 @@ describe("feature-ticket-flow integration", () => {
     // tdd: false (default)
 
     patchHarnessCompatibility(t);
-    await t.run(when("/next-ticket no-tdd-roles", []));
+    await t.run(when("/feature-next no-tdd-roles", []));
     await settleSession(t);
 
     const userMessages = t.events.messages
@@ -596,7 +596,7 @@ describe("feature-ticket-flow integration", () => {
     );
 
     patchHarnessCompatibility(t);
-    await t.run(when("/next-ticket mem-feature", []));
+    await t.run(when("/feature-next mem-feature", []));
     await settleSession(t);
 
     const userMessages = t.events.messages
@@ -666,7 +666,7 @@ describe("feature-ticket-flow integration", () => {
     await saveRegistry(specsRoot, "retry-priority", registry);
 
     patchHarnessCompatibility(t);
-    await t.run(when("/next-ticket retry-priority", []));
+    await t.run(when("/feature-next retry-priority", []));
     await settleSession(t);
 
     const userMessages = t.events.messages
@@ -690,7 +690,7 @@ describe("feature-ticket-flow integration", () => {
     ]);
 
     patchHarnessCompatibility(t);
-    await t.run(when("/next-ticket reviewer-artifact-guard", []));
+    await t.run(when("/feature-next reviewer-artifact-guard", []));
     await settleSession(t, 250);
 
     const { specsRoot } = await featurePaths(t.cwd, "reviewer-artifact-guard");
@@ -712,7 +712,7 @@ describe("feature-ticket-flow integration", () => {
     ]);
 
     patchHarnessCompatibility(t);
-    await t.run(when("/next-ticket missing-outcome", []));
+    await t.run(when("/feature-next missing-outcome", []));
     await settleSession(t, 250);
 
     const { specsRoot } = await featurePaths(t.cwd, "missing-outcome");
@@ -734,7 +734,7 @@ describe("feature-ticket-flow integration", () => {
     ]);
 
     patchHarnessCompatibility(t);
-    await t.run(when("/next-ticket phase-prompts", []));
+    await t.run(when("/feature-next phase-prompts", []));
     await settleSession(t, 250);
 
     const userMessages = t.events.messages

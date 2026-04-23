@@ -121,7 +121,7 @@ describe("scaffoldSpecFile", () => {
     expect(content).toContain("onboarding-flow");
     expect(content).toContain("## Goal");
     expect(content).toContain("## Acceptance Criteria");
-    expect(content).toContain("/plan-feature");
+    expect(content).toContain("/feature-plan");
   });
 
   it("returns false and does not overwrite an existing spec file", async () => {
