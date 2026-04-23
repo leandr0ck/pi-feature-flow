@@ -174,7 +174,7 @@ These are validated before the extension advances to the next phase.
 Run:
 
 ```text
-/plan-feature <feature>
+/feature-plan <feature>
 ```
 
 The package will:
@@ -326,7 +326,7 @@ The selected profile for each ticket is read from the ticket file.
 When `tdd: true`, each ticket runs through **two separate agent phases**:
 
 ```
-/next-ticket
+/feature-next
   │
   ├─ Phase 1: Tester agent
   │   - Writes failing tests
