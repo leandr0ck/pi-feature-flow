@@ -50,7 +50,7 @@ export function shouldAutoAdvanceToNextTicket(config: FeatureFlowConfig): boolea
  * Build a human-readable summary of all agent role configurations.
  */
 export function renderAgentRoles(config: FeatureFlowConfig): string[] {
-  const roles: FeatureAgentRole[] = ["planner", "tester", "worker", "reviewer", "chief"];
+  const roles: FeatureAgentRole[] = ["planner", "tester", "worker", "reviewer", "manager"];
   const lines: string[] = [];
 
   for (const role of roles) {

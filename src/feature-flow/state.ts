@@ -15,18 +15,16 @@ export type PendingExecution =
       feature: string;
       ticketId: string;
       phase: "start" | "resume" | "retry";
-      profileName?: string;
       cwd: string;
       specsRoot: string;
     }
   | {
-      /** Explicit execution phases: worker → reviewer → chief. */
+      /** Explicit execution phases: worker → reviewer → manager. */
       kind: "ticket-execution";
       feature: string;
       ticketId: string;
       phase: "start" | "resume" | "retry";
-      executionRole: "worker" | "reviewer" | "chief";
-      profileName?: string;
+      executionRole: "worker" | "reviewer" | "manager";
       accumulatedUsage?: {
         inputTokens: number;
         outputTokens: number;

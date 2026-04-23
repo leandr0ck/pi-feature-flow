@@ -11,9 +11,6 @@
     "tester": {},
     "worker": {},
     "reviewer": {},
-    "chief": {}
-  },
-  "modelTiers": {},
-  "profiles": {},
-  "commands": {}
+    "manager": {}
+  }
 }

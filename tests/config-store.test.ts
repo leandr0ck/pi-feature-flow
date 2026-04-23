@@ -58,16 +58,16 @@ describe("config-store", () => {
       });
     });
 
-    it("blocked is true when missing_required_command_key is present", async () => {
+    it("blocked is true when a config error is present", async () => {
       await withTempDir(async (cwd) => {
         await mkdir(path.join(cwd, ".pi"), { recursive: true });
         await writeFile(
           path.join(cwd, ".pi", "feature-flow.json"),
-          JSON.stringify({ commands: { "ff-fast": { description: "no entryFlow" } } }),
+          JSON.stringify({ tdd: "nope" }),
         );
         const store = createRuntimeConfigStore(cwd);
         expect(store.getGateState().blocked).toBe(true);
-        expect(store.getGateState().diagnostics.some((d) => d.code === "missing_required_command_key")).toBe(true);
+        expect(store.getGateState().diagnostics.some((d) => d.code === "invalid_tdd")).toBe(true);
       });
     });
 
@@ -76,7 +76,7 @@ describe("config-store", () => {
         await mkdir(path.join(cwd, ".pi"), { recursive: true });
         await writeFile(
           path.join(cwd, ".pi", "feature-flow.json"),
-          JSON.stringify({ unknownKey: "ignored", agents: { worker: { model: "ghost-tier" } } }),
+          JSON.stringify({ unknownKey: "ignored" }),
         );
         const store = createRuntimeConfigStore(cwd);
         expect(store.getGateState().blocked).toBe(false);

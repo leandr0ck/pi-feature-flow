@@ -4,7 +4,7 @@ import path from "node:path";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export type Phase = "planner" | "tester" | "worker" | "reviewer" | "chief";
+export type Phase = "planner" | "tester" | "worker" | "reviewer" | "manager";
 
 export type RunStatus = "ok" | "error" | "running";
 

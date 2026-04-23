@@ -215,6 +215,26 @@ describe("validateFeature", () => {
 
   // ── Missing dependency ────────────────────────────────────────────────────
 
+  it("errors when a ticket omits all test file paths from - Files:", async () => {
+    const specsRoot = await makeTempDir();
+    dirs.push(specsRoot);
+    const featureDir = path.join(specsRoot, "missing-test-file-scope");
+    const ticketsDir = path.join(featureDir, "tickets");
+    await mkdir(ticketsDir, { recursive: true });
+    await writeFile(path.join(featureDir, "01-master-spec.md"), `# missing-test-file-scope\n\n## Goal\nTest.\n`, "utf8");
+    await writeFile(path.join(featureDir, "02-execution-plan.md"), validPlan("missing-test-file-scope"), "utf8");
+    await writeFile(
+      path.join(ticketsDir, "STK-001.md"),
+      validTicket("STK-001").replace("- Files: src/example.ts, tests/example.test.ts", "- Files: src/example.ts, src/other.ts"),
+      "utf8",
+    );
+
+    const result = await validateFeature(specsRoot, "missing-test-file-scope");
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((i) => i.code === "ticket-files-missing-test-path" && i.ticketId === "STK-001")).toBe(true);
+  });
+
   it("errors when a ticket depends on a non-existent ticket", async () => {
     const specsRoot = await makeTempDir();
     dirs.push(specsRoot);

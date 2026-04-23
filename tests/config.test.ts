@@ -58,7 +58,7 @@ describe("feature-ticket-flow config", () => {
         agents: {
           tester: { agent: "claude", skills: ["tdd"] },
           reviewer: { agent: "claude", skills: ["code-reviewer"] },
-          chief: { agent: "claude", skills: [] },
+          manager: { agent: "claude", skills: [] },
         },
       }),
       "utf8",
@@ -67,6 +67,6 @@ describe("feature-ticket-flow config", () => {
     const config = await loadConfig(cwd);
     expect(config.agents?.tester?.skills).toEqual(["tdd"]);
     expect(config.agents?.reviewer?.skills).toEqual(["code-reviewer"]);
-    expect(config.agents?.chief?.skills).toEqual([]);
+    expect(config.agents?.manager?.skills).toEqual([]);
   });
 });

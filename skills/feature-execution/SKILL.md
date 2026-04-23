@@ -1,6 +1,6 @@
 ---
 name: feature-execution
-description: Execute a single feature ticket through the tester → worker → reviewer → chief pipeline. Use when implementing or retrying one ticket in the bundled feature workflow.
+description: Execute a single feature ticket through the tester → worker → reviewer → manager pipeline. Use when implementing or retrying one ticket in the bundled feature workflow.
 ---
 
 # Feature Ticket Execution
@@ -9,9 +9,9 @@ Use this skill to execute exactly one ticket.
 
 When TDD is enabled, the system runs **two separate agent phases**:
 1. **Tester phase** — a dedicated agent writes failing tests and produces tester notes.
-2. **Worker/Reviewer/Chief phase** — a separate agent reads those notes, implements the feature, and reviews and records the result.
+2. **Worker/Reviewer/Manager phase** — a separate agent reads those notes, implements the feature, and reviews and records the result.
 
-When TDD is disabled, only the Worker/Reviewer/Chief phase runs.
+When TDD is disabled, only the Worker/Reviewer/Manager phase runs.
 
 ---
 
@@ -54,7 +54,7 @@ End with one of:
 
 ---
 
-## Worker / Reviewer / Chief phase
+## Worker / Reviewer / Manager phase
 
 The worker agent receives a separate prompt that includes the tester notes path.
 
@@ -78,9 +78,9 @@ The worker agent receives a separate prompt that includes the tester notes path.
 - Review the diff against the ticket acceptance criteria.
 - Verify tests pass.
 - Flag any correctness, security, or maintainability concerns.
-- Do not proceed to the chief if critical issues remain unaddressed.
+- Do not proceed to the manager if critical issues remain unaddressed.
 
-### Chief
+### Manager
 After the reviewer gives the green light:
 
 1. **Append a dated entry** to `04-feature-memory.md` (cumulative, cross-ticket):
@@ -97,7 +97,7 @@ After the reviewer gives the green light:
    Accumulated context built ticket by ticket. Read this before starting each new ticket.
 
    ## Accumulated Context
-   - (the chief fills this in over time)
+   - (the manager fills this in over time)
    ```
 
 2. **Write `tickets/<ticket-id>-worker-context.md`** (per-ticket, per-attempt — used on retry):

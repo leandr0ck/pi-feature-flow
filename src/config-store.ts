@@ -76,11 +76,8 @@ export function createRuntimeConfigStore(cwd: string): RuntimeConfigStore {
       tester: {},
       worker: {},
       reviewer: {},
-      chief: {},
+      manager: {},
     },
-    modelTiers: {},
-    profiles: {},
-    commands: {},
   };
 
   // ── Load defaults (one-time, at construction) ─────────────────────────────
@@ -148,11 +145,8 @@ const DEFAULT_CONFIG_TEMPLATE = {
     tester: {},
     worker: {},
     reviewer: {},
-    chief: {},
+    manager: {},
   },
-  modelTiers: {},
-  profiles: {},
-  commands: {},
 };
 
 /**

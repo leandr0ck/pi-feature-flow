@@ -49,8 +49,8 @@ export function reviewerHandoffPath(specsRoot: string, feature: string, ticketId
   return path.join(featureRoot(specsRoot, feature), DEFAULT_TICKETS_DIR_NAME, `${ticketId}-reviewer-handoff.json`);
 }
 
-export function chiefHandoffPath(specsRoot: string, feature: string, ticketId: string) {
-  return path.join(featureRoot(specsRoot, feature), DEFAULT_TICKETS_DIR_NAME, `${ticketId}-chief-handoff.json`);
+export function managerHandoffPath(specsRoot: string, feature: string, ticketId: string) {
+  return path.join(featureRoot(specsRoot, feature), DEFAULT_TICKETS_DIR_NAME, `${ticketId}-manager-handoff.json`);
 }
 
 export function featureCostPath(specsRoot: string, feature: string) {
@@ -303,7 +303,7 @@ export async function recordTicketCost(
   specsRoot: string,
   feature: string,
   ticketId: string,
-  phase: "tester" | "worker" | "reviewer" | "chief",
+  phase: "tester" | "worker" | "reviewer" | "manager",
   runIndex: number,
   entry: Omit<TicketCostEntry, "ticketId" | "phase" | "runIndex">,
 ): Promise<void> {

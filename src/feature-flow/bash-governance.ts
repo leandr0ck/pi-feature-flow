@@ -17,7 +17,7 @@ export function isSafeValidationCommand(command: string): boolean {
   return /\b(?:bun|npm|pnpm|yarn)\s+run\s+(?:typecheck|build|lint)\b|\b(?:bun|npm|pnpm|yarn)\s+build\b|\b(?:bun|npm|pnpm|yarn)\s+lint\b|\b(?:bunx|npx|pnpx)\s+tsc\b[^\n]*\s--noEmit\b|\btsc\b[^\n]*\s--noEmit\b|\b(?:next|vite|astro|svelte-kit)\s+build\b/i.test(command);
 }
 
-export function getForbiddenBashDecision(command: string, phase?: "PLANNER" | "TESTER" | "WORKER" | "REVIEWER" | "CHIEF" | "UNKNOWN"): string | undefined {
+export function getForbiddenBashDecision(command: string, phase?: "PLANNER" | "TESTER" | "WORKER" | "REVIEWER" | "MANAGER" | "UNKNOWN"): string | undefined {
   if (isSafeValidationCommand(command)) return undefined;
 
   for (const entry of FORBIDDEN_BASH_PATTERNS) {

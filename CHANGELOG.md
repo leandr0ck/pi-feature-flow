@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.6.1] - 2026-04-23
 
 ### Added
 - **`allowExternalToolCalls` config flag**: new `execution.allowExternalToolCalls` flag disables bash command blocking (migrate, db:push, direct SQL) for projects that need it outside feature-flow sessions.

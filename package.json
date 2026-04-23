@@ -1,6 +1,6 @@
 {
   "name": "pi-feature-flow",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Pi extension for feature-based ticket execution with persistent registry and next-ticket automation",
   "keywords": [
     "pi-package",

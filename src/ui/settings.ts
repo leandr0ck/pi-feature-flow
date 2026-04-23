@@ -1,6 +1,5 @@
 import chalk from "chalk";
 import { Container, Text, Box } from "@mariozechner/pi-tui";
-import type { FeatureFlowConfig } from "../types.js";
 import type { ConfigGateState } from "../config-validation.js";
 import type { Phase } from "../run-history.js";
 
@@ -9,10 +8,9 @@ interface SettingsConfig {
   tdd?: boolean;
   execution?: { autoStartFirstTicketAfterPlanning?: boolean; autoAdvanceToNextTicket?: boolean };
   agents?: Partial<Record<Phase, { model?: string; thinking?: string }>>;
-  modelTiers?: Record<string, { model: string; thinking?: string }>;
 }
 
-// ─── Panel constants ─────────────────────────────────────────────────────────
+// ─── Panel constants ───────────────────────────────────────────────────────
 
 const W = 58;
 const BORDER_COLOR_FN = (text: string) => chalk.bgGray(text);
@@ -20,17 +18,11 @@ const DIM_FN = (text: string) => chalk.dim(text);
 const SUCCESS_FN = (text: string) => chalk.green(text);
 const ERROR_FN = (text: string) => chalk.red(text);
 const WARNING_FN = (text: string) => chalk.yellow(text);
-const ACCENT_FN = (text: string) => chalk.cyan(text);
 
-// ─── Truncation helper (avoids ANSI bleed) ──────────────────────────────────
+// ─── Truncation helper (avoids ANSI bleed) ─────────────────────────────────
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
-/**
- * Truncate text to maxWidth, preserving ANSI styling through the ellipsis.
- * Unlike pi-tui's truncateToWidth which adds \x1b[0m before ellipsis (breaking backgrounds),
- * this implementation tracks active ANSI styles and re-applies them.
- */
 function truncLine(text: string, maxWidth: number): string {
   const visible = (s: string): number => {
     return s.replace(/\x1b\[[0-9;]*m/g, "").length;
@@ -82,7 +74,7 @@ function truncLine(text: string, maxWidth: number): string {
   return result + activeStyles.join("") + "…";
 }
 
-// ─── Pure renderer using pi-tui components ──────────────────────────────────
+// ─── Pure renderer using pi-tui components ─────────────────────────────────
 
 function renderDiagnosticRow(
   level: "error" | "warning",
@@ -96,17 +88,12 @@ function renderDiagnosticRow(
   ];
 }
 
-/**
- * Render the settings panel as an ASCII string using pi-tui Container.
- * Read-only — no polling, no keyboard interaction.
- */
 export function renderSettingsPanel(
   config: SettingsConfig,
   gateState: ConfigGateState,
 ): string {
   const container = new Container();
 
-  // Header
   const headerBox = new Box(0, 0, BORDER_COLOR_FN);
   headerBox.addChild(new Text(chalk.bold(chalk.cyan("╔")) + "═".repeat(W - 2) + chalk.bold(chalk.cyan("╗")), 0, 0));
   container.addChild(headerBox);
@@ -120,8 +107,7 @@ export function renderSettingsPanel(
   thBox.addChild(new Text(chalk.bold(chalk.cyan("╠")) + "═".repeat(W - 2) + chalk.bold(chalk.cyan("╣")), 0, 0));
   container.addChild(thBox);
 
-  // Config section
-  const configLabel = `  Config: .pi/feature-flow.json`;
+  const configLabel = "  Config: .pi/feature-flow.json";
   const configBox = new Box(1, 0, BORDER_COLOR_FN);
   configBox.addChild(new Text(DIM_FN(configLabel), 0, 0));
   container.addChild(configBox);
@@ -148,47 +134,16 @@ export function renderSettingsPanel(
     container.addChild(autoAdvanceBox);
   }
 
-  // Section divider
   const th2Box = new Box(0, 0, BORDER_COLOR_FN);
   th2Box.addChild(new Text(chalk.bold(chalk.cyan("╠")) + "═".repeat(W - 2) + chalk.bold(chalk.cyan("╣")), 0, 0));
   container.addChild(th2Box);
 
-  // Model tiers section
-  const tiersLabel = "  Model Tiers";
-  const tiersBox = new Box(1, 0, BORDER_COLOR_FN);
-  tiersBox.addChild(new Text(DIM_FN(tiersLabel), 0, 0));
-  container.addChild(tiersBox);
-
-  const tiers = config.modelTiers ?? {};
-  if (Object.keys(tiers).length === 0) {
-    const emptyBox = new Box(1, 0, BORDER_COLOR_FN);
-    emptyBox.addChild(new Text(DIM_FN("  — none configured —"), 0, 0));
-    container.addChild(emptyBox);
-  } else {
-    for (const [name, tier] of Object.entries(tiers as Record<string, { model: string; thinking?: string }>)) {
-      const thinking = tier.thinking ? ` thinking=${tier.thinking}` : "";
-      const tierLine = `${tier.model}${thinking}`;
-      const nameW = 10;
-      const inner = W - nameW - 4;
-      const tierValue = `  ${name.padEnd(nameW)} ${tierLine}`.padEnd(inner + nameW + 3);
-      const tierBox = new Box(1, 0, BORDER_COLOR_FN);
-      tierBox.addChild(new Text(truncLine(tierValue, W - 4), 0, 0));
-      container.addChild(tierBox);
-    }
-  }
-
-  // Section divider
-  const th3Box = new Box(0, 0, BORDER_COLOR_FN);
-  th3Box.addChild(new Text(chalk.bold(chalk.cyan("╠")) + "═".repeat(W - 2) + chalk.bold(chalk.cyan("╣")), 0, 0));
-  container.addChild(th3Box);
-
-  // Role → Model section
   const roleLabel = "  Role → Model";
   const roleBox = new Box(1, 0, BORDER_COLOR_FN);
   roleBox.addChild(new Text(DIM_FN(roleLabel), 0, 0));
   container.addChild(roleBox);
 
-  const roles: Phase[] = ["planner", "tester", "worker", "reviewer", "chief"];
+  const roles: Phase[] = ["planner", "tester", "worker", "reviewer", "manager"];
   for (const role of roles) {
     const agent = config.agents?.[role];
     if (!agent) continue;
@@ -200,12 +155,10 @@ export function renderSettingsPanel(
     container.addChild(roleBoxItem);
   }
 
-  // Section divider
-  const th4Box = new Box(0, 0, BORDER_COLOR_FN);
-  th4Box.addChild(new Text(chalk.bold(chalk.cyan("╠")) + "═".repeat(W - 2) + chalk.bold(chalk.cyan("╣")), 0, 0));
-  container.addChild(th4Box);
+  const th3Box = new Box(0, 0, BORDER_COLOR_FN);
+  th3Box.addChild(new Text(chalk.bold(chalk.cyan("╠")) + "═".repeat(W - 2) + chalk.bold(chalk.cyan("╣")), 0, 0));
+  container.addChild(th3Box);
 
-  // Diagnostics section
   const diagLabel = "  Diagnostics";
   const diagBox = new Box(1, 0, BORDER_COLOR_FN);
   diagBox.addChild(new Text(DIM_FN(diagLabel), 0, 0));
@@ -225,7 +178,6 @@ export function renderSettingsPanel(
     }
   }
 
-  // Footer
   const footerBox = new Box(0, 0, BORDER_COLOR_FN);
   footerBox.addChild(new Text(chalk.bold(chalk.cyan("╚")) + "═".repeat(W - 2) + chalk.bold(chalk.cyan("╝")), 0, 0));
   container.addChild(footerBox);
@@ -233,14 +185,8 @@ export function renderSettingsPanel(
   return container.render(W).join("\n");
 }
 
-// ─── Interactive component ────────────────────────────────────────────────────
-
 type CloseCallback = () => void;
 
-/**
- * Read-only settings component. Renders once, listens for close key.
- * Uses pi-tui components for rendering.
- */
 export class FeatureFlowSettingsComponent {
   private onClose: CloseCallback | undefined;
 
@@ -258,7 +204,7 @@ export class FeatureFlowSettingsComponent {
   }
 
   handleKey(key: string): void {
-    if (key === "q" || key === "Escape") {
+    if (key === "q" || key === "escape") {
       this.onClose?.();
     }
   }

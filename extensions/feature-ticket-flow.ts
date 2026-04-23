@@ -75,6 +75,8 @@ import {
 import { createFeatureCompletions } from "../src/feature-flow/ui.js";
 import { validateFeature } from "../src/validation.js";
 
+let activeModelLabel: string | undefined;
+
 // ─── Config gate helpers ───────────────────────────────────────────────────────
 
 type CommandContext = ExtensionCommandContext & {
@@ -219,8 +221,6 @@ async function getValidatedPendingExecution(): Promise<ReturnType<typeof getPend
 }
 
 export default function featureTicketFlow(pi: ExtensionAPI) {
-  let activeModelLabel: string | undefined;
-
   const refreshFeatureFlowStatus = (
     ctx: Pick<ExtensionContext, "ui" | "model">,
   ) => {
@@ -787,7 +787,13 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       await persistCheckpoint(planPending);
       trackPhaseStart(planPending);
       refreshFeatureFlowStatus(ctx);
-      await applyRoleRuntimeConfig(pi, ctx, config, "planner");
+      const plannerModelOk = await applyRoleRuntimeConfig(pi, ctx, config, "planner");
+      if (!plannerModelOk) {
+        setPendingExecution(undefined);
+        await clearCheckpoint(specsRoot, feature).catch(() => undefined);
+        refreshFeatureFlowStatus(ctx);
+        return;
+      }
       refreshFeatureFlowStatus(ctx);
       pi.sendUserMessage(
         buildFeaturePlanningPrompt(feature, specsRoot, specPath, config, tddEnabled),
@@ -1325,7 +1331,7 @@ function sumUsage(base?: Partial<UsageTotals>, next?: Partial<UsageTotals>): Usa
   };
 }
 
-async function evaluateGovernanceForToolCall(
+export async function evaluateGovernanceForToolCall(
   event: { toolName: string; input: unknown },
   pending: ReturnType<typeof getPendingExecution>,
 ): Promise<{ block: true; reason: string } | undefined> {
@@ -1338,6 +1344,30 @@ async function evaluateGovernanceForToolCall(
   if (governance.cwd) {
     const config = await loadConfig(governance.cwd);
     if (config.execution?.allowExternalToolCalls) return undefined;
+  }
+
+  if (governance.phase === "PLANNER") {
+    const featureRoot = governance.specsRoot && governance.feature
+      ? path.join(governance.specsRoot, governance.feature)
+      : undefined;
+
+    if (event.toolName === "bash") {
+      return {
+        block: true,
+        reason: "Planner may not use bash. Respond BLOCKED and explain the real constraint.",
+      };
+    }
+
+    if (featureRoot && (event.toolName === "read" || event.toolName === "write" || event.toolName === "edit")) {
+      const filePath = ((event.input as any)?.path ?? "") as string;
+      const resolvedPath = resolveCandidatePath(governance.cwd, filePath);
+      if (!isWithinPath(resolvedPath, featureRoot)) {
+        const reason = event.toolName === "read"
+          ? `Planner may only read files inside the active feature directory. Path: '${filePath}'. Respond BLOCKED instead of working around this restriction.`
+          : `Planner may only write inside the active feature directory. Path: '${filePath}'. Respond BLOCKED instead of working around this restriction.`;
+        return { block: true, reason };
+      }
+    }
   }
 
   if (event.toolName === "write" || event.toolName === "edit") {
@@ -1596,7 +1626,7 @@ function getConfiguredModelLabel(
   currentProvider?: string,
 ): string | undefined {
   if (!role) return undefined;
-  const raw = config.agents?.[role]?.model;
+  const raw = config.agents?.[role as keyof NonNullable<FeatureFlowConfig["agents"]>]?.model;
   if (!raw) return undefined;
   const parsed = parseConfiguredModelRef(raw, currentProvider);
   return parsed ? `${parsed.provider}/${parsed.modelId}` : raw;
@@ -1647,16 +1677,16 @@ async function applyRoleRuntimeConfig(
   config: Awaited<ReturnType<typeof loadConfig>>,
   role: FlowRole,
   profileName?: string,
-): Promise<void> {
-  if (!ctx) return;
+): Promise<boolean> {
+  if (!ctx) return true;
 
   // Merge profile overlay into config agents if a profile is specified
   const profileAgents = profileName && config.profiles?.[profileName]?.agents;
   const mergedAgents = profileAgents
     ? { ...config.agents, ...profileAgents }
     : config.agents;
-  const roleConfig = mergedAgents?.[role];
-  if (!roleConfig) return;
+  const roleConfig = mergedAgents?.[role as keyof typeof mergedAgents];
+  if (!roleConfig) return true;
 
   // Resolve tier → concrete model (if applicable)
   const resolved = resolveModelForRole(config, role);
@@ -1670,40 +1700,41 @@ async function applyRoleRuntimeConfig(
   const configuredModelLabel = getConfiguredModelLabel(config, role, ctx.model?.provider);
 
   const modelRef = parseConfiguredModelRef(effectiveModel, ctx.model?.provider);
+  const tierNote = "";
+
   if (modelRef) {
     const targetModel = ctx.modelRegistry.find(modelRef.provider, modelRef.modelId);
     if (!targetModel) {
-      // Build a descriptive message including tier info if available
-      const tierNote = resolved?.source === "tier" && roleConfig.model !== effectiveModel
-        ? ` (via ${roleConfig.model} tier)`
-        : "";
-      ctx.ui.notify(`feature-flow ${role}: configured model not found: ${effectiveModel}${tierNote}`, "warning");
-    } else if (!ctx.model || ctx.model.provider !== targetModel.provider || ctx.model.id !== targetModel.id) {
+      ctx.ui.notify(`feature-flow ${role}: configured model not found: ${effectiveModel}${tierNote}`, "error");
+      return false;
+    }
+
+    if (!ctx.model || ctx.model.provider !== targetModel.provider || ctx.model.id !== targetModel.id) {
       const success = await pi.setModel(targetModel);
-      const tierNote = resolved?.source === "tier" && roleConfig.model !== effectiveModel
-        ? ` via ${roleConfig.model} tier`
-        : "";
       if (!success) {
-        ctx.ui.notify(`feature-flow ${role}: could not switch to ${effectiveModel}${tierNote} (missing API key?)`, "warning");
-      } else {
-        ctx.ui.notify(
-          `feature-flow ${role}: model switched ${currentModelLabel} → ${targetModel.provider}/${targetModel.id}${thinkingLabel}${tierNote}`,
-          "info",
-        );
+        ctx.ui.notify(`feature-flow ${role}: could not switch to ${effectiveModel}${tierNote} (missing API key?)`, "error");
+        return false;
       }
+
+      activeModelLabel = `${targetModel.provider}/${targetModel.id}`;
+      ctx.ui.notify(
+        `feature-flow ${role}: model switched ${currentModelLabel} → ${activeModelLabel}${thinkingLabel}${tierNote}`,
+        "info",
+      );
     } else {
-      const tierNote = resolved?.source === "tier" && roleConfig.model !== effectiveModel
-        ? ` (via ${roleConfig.model} tier)`
-        : "";
-      ctx.ui.notify(`feature-flow ${role}: using model ${configuredModelLabel ?? currentModelLabel}${thinkingLabel}${tierNote}`, "info");
+      activeModelLabel = configuredModelLabel ?? currentModelLabel;
+      ctx.ui.notify(`feature-flow ${role}: using model ${activeModelLabel}${thinkingLabel}${tierNote}`, "info");
     }
   } else {
-    ctx.ui.notify(`feature-flow ${role}: using current model ${currentModelLabel}${thinkingLabel}`, "info");
+    activeModelLabel = currentModelLabel;
+    ctx.ui.notify(`feature-flow ${role}: using current model ${currentModelLabel}${thinkingLabel}${tierNote}`, "info");
   }
 
   if (effectiveThinking) {
     pi.setThinkingLevel(effectiveThinking);
   }
+
+  return true;
 }
 
 async function runNextTicketFlow(pi: ExtensionAPI, feature: string, ctx: CommandContext) {
@@ -1893,7 +1924,8 @@ async function launchTesterPhase(
   config?: Awaited<ReturnType<typeof loadConfig>>,
 ) {
   const resolvedConfig = config ?? (await loadConfig(cwd));
-  await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "tester", profileName);
+  const testerModelOk = await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "tester", profileName);
+  if (!testerModelOk) return;
   const featureDir = path.join(specsRoot, feature);
   const ticketPath = path.join(featureDir, "tickets", `${ticketId}.md`);
   const notesPath = testerNotesPath(specsRoot, feature, ticketId);
@@ -1911,7 +1943,7 @@ async function launchTesterPhase(
   setPendingExecution(testerPending);
   await persistCheckpoint(testerPending);
   trackPhaseStart(testerPending);
-  if (ctx) updateFeatureFlowStatus(ctx, formatModelLabel(ctx.model), pi.getThinkingLevel());
+  if (ctx) updateFeatureFlowStatus(ctx, activeModelLabel ?? formatModelLabel(ctx.model), pi.getThinkingLevel());
   pi.sendUserMessage(message);
 }
 
@@ -1928,7 +1960,8 @@ async function launchWorkerChain(
   config?: Awaited<ReturnType<typeof loadConfig>>,
 ) {
   const resolvedConfig = config ?? (await loadConfig(cwd));
-  await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "worker", profileName);
+  const workerModelOk = await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "worker", profileName);
+  if (!workerModelOk) return;
   const featureDir = path.join(specsRoot, feature);
   const ticketPath = path.join(featureDir, "tickets", `${ticketId}.md`);
 
@@ -1976,7 +2009,7 @@ async function launchWorkerChain(
   setPendingExecution(execPending);
   await persistCheckpoint(execPending);
   trackPhaseStart(execPending);
-  if (ctx) updateFeatureFlowStatus(ctx, formatModelLabel(ctx.model), pi.getThinkingLevel());
+  if (ctx) updateFeatureFlowStatus(ctx, activeModelLabel ?? formatModelLabel(ctx.model), pi.getThinkingLevel());
   pi.sendUserMessage(message);
 }
 
@@ -1993,7 +2026,8 @@ async function launchReviewerPhase(
   config?: Awaited<ReturnType<typeof loadConfig>>,
 ) {
   const resolvedConfig = config ?? (await loadConfig(cwd));
-  await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "reviewer", profileName);
+  const reviewerModelOk = await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "reviewer", profileName);
+  if (!reviewerModelOk) return;
 
   const featureDir = path.join(specsRoot, feature);
   const ticketPath = path.join(featureDir, "tickets", `${ticketId}.md`);
@@ -2034,7 +2068,7 @@ async function launchReviewerPhase(
   setPendingExecution(execPending);
   await persistCheckpoint(execPending);
   trackPhaseStart(execPending);
-  if (ctx) updateFeatureFlowStatus(ctx, formatModelLabel(ctx.model), pi.getThinkingLevel());
+  if (ctx) updateFeatureFlowStatus(ctx, activeModelLabel ?? formatModelLabel(ctx.model), pi.getThinkingLevel());
   pi.sendUserMessage(message);
 }
 
@@ -2051,7 +2085,8 @@ async function launchChiefPhase(
   config?: Awaited<ReturnType<typeof loadConfig>>,
 ) {
   const resolvedConfig = config ?? (await loadConfig(cwd));
-  await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "chief", profileName);
+  const chiefModelOk = await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "chief", profileName);
+  if (!chiefModelOk) return;
 
   const featureDir = path.join(specsRoot, feature);
   const ticketPath = path.join(featureDir, "tickets", `${ticketId}.md`);
@@ -2081,6 +2116,6 @@ async function launchChiefPhase(
   };
   setPendingExecution(execPending);
   await persistCheckpoint(execPending);
-  if (ctx) updateFeatureFlowStatus(ctx, formatModelLabel(ctx.model), pi.getThinkingLevel());
+  if (ctx) updateFeatureFlowStatus(ctx, activeModelLabel ?? formatModelLabel(ctx.model), pi.getThinkingLevel());
   pi.sendUserMessage(message);
 }

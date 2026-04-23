@@ -122,6 +122,17 @@ export async function validateFeature(specsRoot: string, feature: string): Promi
       });
     }
 
+    const fileScopes = parseFiles(content);
+    if (fileScopes.length > 0 && !fileScopes.some(isTestFileScope)) {
+      issues.push({
+        severity: "error",
+        code: "ticket-files-missing-test-path",
+        message: `Ticket ${ticket.id} must include at least one test file path in - Files: so the red phase can run within scope.`,
+        ticketId: ticket.id,
+        filePath: ticket.path,
+      });
+    }
+
     // Warn about non-standard id format
     if (!/^(?:[A-Z]+-\d+|T\d+)$/i.test(ticket.id)) {
       issues.push({
@@ -221,6 +232,19 @@ function parseDependencies(content: string): string[] {
 
   const splitter = DEPENDENCY_SPLIT_PATTERN === "," ? /,/ : new RegExp(DEPENDENCY_SPLIT_PATTERN);
   return value.split(splitter).map((part) => part.trim()).filter(Boolean);
+}
+
+function parseFiles(content: string): string[] {
+  const match = content.match(/^\-\s*Files:\s*(.+)$/m);
+  const raw = match?.[1]?.trim();
+  if (!raw) return [];
+  return raw.split(",").map((part) => part.trim()).filter(Boolean);
+}
+
+function isTestFileScope(fileScope: string): boolean {
+  return /(^|\/)(__tests__|tests)(\/|$)/i.test(fileScope)
+    || /\.(test|spec)\.[^/]+$/i.test(fileScope)
+    || /\.(test|spec)\b/i.test(fileScope);
 }
 
 function detectCycles(tickets: TicketRecord[]): ValidationIssue[] {

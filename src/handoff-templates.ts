@@ -28,7 +28,7 @@ export function renderHandoffLogTemplate(ticketId: string): string {
     "- Files changed: <paths>",
     "- Technical decisions: <none | bullets>",
     "- Risks / tradeoffs: <none | bullets>",
-    "- Notes for reviewer/chief: <key context>",
+    "- Notes for reviewer/manager: <key context>",
     "",
     "## Reviewer",
     "- Verifications: <checks performed>",
@@ -37,7 +37,7 @@ export function renderHandoffLogTemplate(ticketId: string): string {
     "- Residual risks: <none | bullets>",
     "- Recommendation: <APPROVED | NEEDS-FIX | BLOCKED>",
     "",
-    "## Chief",
+    "## Manager",
     "- Promoted to feature memory: <none | bullets>",
     "- Reusable patterns for future tickets: <none | bullets>",
     "- Continuation advice: <none | bullets>",
@@ -143,10 +143,10 @@ export function renderReviewerHandoffJsonTemplate(ticketId: string): string {
   }, null, 2);
 }
 
-export function renderChiefHandoffJsonTemplate(ticketId: string): string {
+export function renderManagerHandoffJsonTemplate(ticketId: string): string {
   return JSON.stringify({
     ticketId,
-    phase: "chief",
+    phase: "manager",
     status: "APPROVED",
     promotedToFeatureMemory: ["documented decisions and reusable patterns"],
     reusablePatterns: ["reuse the validated implementation pattern in future tickets"],

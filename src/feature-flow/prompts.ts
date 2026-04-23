@@ -2,7 +2,7 @@ import path from "node:path";
 import { loadConfig, renderAgentRoles } from "../config.js";
 import { buildExecutionPlanTemplateInstructions } from "../execution-plan-template.js";
 import {
-  renderChiefHandoffJsonTemplate,
+  renderManagerHandoffJsonTemplate,
   renderFeatureMemoryTemplate,
   renderHandoffLogTemplate,
   renderReviewerHandoffJsonTemplate,
@@ -58,6 +58,7 @@ export function buildFeaturePlanningPrompt(
     `- ticket files under ${path.join(featureDir, "tickets")}`,
     "",
     "Do NOT rewrite or move the spec document.",
+    "Read and write only inside the active feature directory. Do not inspect or modify files outside it.",
     "Do NOT add a product review step or ask the user to approve in a browser.",
     "",
     "## Planner rules",
@@ -66,6 +67,7 @@ export function buildFeaturePlanningPrompt(
     "- Create small, dependency-aware tickets as thin vertical slices.",
     "- Every ticket must include a `- Requires:` line.",
     "- Every ticket must include a `- Files:` line with exact repo-relative files or directories the executor may modify.",
+    "- Every ticket `- Files:` line must include at least one writable test file path (for example `tests/foo.test.ts` or `src/foo.test.ts`).",
     "- Use STK-001, STK-002, ... ticket ids.",
     "- Keep all generated files inside the feature directory.",
     "- `- Files:` must be precise. Prefer exact file paths. Use a directory only when a whole feature folder is intentionally in scope.",
@@ -149,7 +151,7 @@ export function buildTesterPrompt(
   ].join("\n");
 }
 
-// ─── Worker / Reviewer / Chief prompts ───────────────────────────────────────
+// ─── Worker / Reviewer / Manager prompts ──────────────────────────────────────
 
 export function buildWorkerPrompt(
   feature: string,
@@ -312,7 +314,7 @@ export function buildReviewerPrompt(
   return lines.join("\n");
 }
 
-export function buildChiefPrompt(
+export function buildManagerPrompt(
   feature: string,
   ticketId: string,
   featureDir: string,
@@ -321,11 +323,11 @@ export function buildChiefPrompt(
   reviewerNotesPath: string,
   workerContextPath: string,
   handoffLogPath: string,
-  chiefHandoffPath: string,
+  managerHandoffPath: string,
   config: FeatureFlowConfig,
 ): string {
   return [
-    `Run the bundled \`feature-execution\` skill — **Chief phase** for feature "${feature}" ticket "${ticketId}".`,
+    `Run the bundled \`feature-execution\` skill — **Manager phase** for feature "${feature}" ticket "${ticketId}".`,
     "",
     "## Files to read first",
     ...baseExecutionFiles(featureDir, ticketPath),
@@ -333,7 +335,7 @@ export function buildChiefPrompt(
     `- Handoff log: ${handoffLogPath}`,
     `- Feature memory: ${memoryPath}`,
     "",
-    "## Your role: Chief — finalize knowledge handoff",
+    "## Your role: Manager — finalize knowledge handoff",
     "Governance is strict: you may only write the feature memory file, the worker context file, and the handoff log for this ticket.",
     `1. Read ${handoffLogPath} completely and use it as the source of truth for cross-role learnings.`,
     `2. Append a dated learnings entry to ${memoryPath}`,
@@ -344,21 +346,21 @@ export function buildChiefPrompt(
     `3. Write a worker context file to ${workerContextPath}`,
     "   Use this exact format:",
     ...toMarkdownCodeFence(renderWorkerContextTemplate(ticketId)).map((line) => `   ${line}`),
-    `4. Append a Chief section to ${handoffLogPath} summarising what was promoted to feature memory and what future tickets should reuse.`,
-    `5. Write the structured chief handoff JSON to ${chiefHandoffPath}.`,
+    `4. Append a Manager section to ${handoffLogPath} summarising what was promoted to feature memory and what future tickets should reuse.`,
+    `5. Write the structured manager handoff JSON to ${managerHandoffPath}.`,
     "6. Do NOT modify the ticket registry directly. The extension updates it automatically.",
     "",
     "## Feature memory template (use this exact template if the file does not exist yet)",
     ...toMarkdownCodeFence(renderFeatureMemoryTemplate(feature)),
     "",
-    "## Handoff log template (update only the Chief section in this phase)",
+    "## Handoff log template (update only the Manager section in this phase)",
     ...toMarkdownCodeFence(renderHandoffLogTemplate(ticketId)),
     "",
-    "## Structured chief handoff JSON (exact keys, valid JSON)",
-    ...toJsonCodeFence(renderChiefHandoffJsonTemplate(ticketId)),
+    "## Structured manager handoff JSON (exact keys, valid JSON)",
+    ...toJsonCodeFence(renderManagerHandoffJsonTemplate(ticketId)),
     "",
     "## Agent configuration",
-    ...renderRoleConfig(config, "chief"),
+    ...renderRoleConfig(config, "manager"),
     "",
     "When you finish, clearly say whether the result is APPROVED, BLOCKED, or NEEDS-FIX.",
     "Include a one-line summary of what was recorded.",
@@ -374,7 +376,7 @@ export function buildSubagentGuidance(config: FeatureFlowConfig, phase: "plannin
     "- If the `subagent` tool is available in Pi, prefer subagent delegation.",
     phase === "planning"
       ? "- Delegation order: planner (creates plan + tickets)."
-      : "- Delegation order: tester → worker → reviewer → chief.",
+      : "- Delegation order: tester → worker → reviewer → manager.",
     ...(agentPrefs.length > 0
       ? ["- Use these configured role preferences when delegating:", ...agentPrefs]
       : []),

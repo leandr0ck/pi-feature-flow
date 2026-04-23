@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 
-export type HandoffPhase = "tester" | "worker" | "reviewer" | "chief";
+export type HandoffPhase = "tester" | "worker" | "reviewer" | "manager";
 
 export type HandoffValidationResult = {
   ok: boolean;
@@ -100,10 +100,10 @@ async function validateJsonArtifact(
     if (!isNonEmptyString(parsed.recommendation)) issues.push(`reviewer handoff JSON must include recommendation: ${filePath}`);
   }
 
-  if (phase === "chief") {
-    if (!isStringArray(parsed.promotedToFeatureMemory)) issues.push(`chief handoff JSON must include promotedToFeatureMemory: ${filePath}`);
-    if (!isStringArray(parsed.reusablePatterns)) issues.push(`chief handoff JSON must include reusablePatterns: ${filePath}`);
-    if (!isStringArray(parsed.continuationAdvice)) issues.push(`chief handoff JSON must include continuationAdvice: ${filePath}`);
+  if (phase === "manager") {
+    if (!isStringArray(parsed.promotedToFeatureMemory)) issues.push(`manager handoff JSON must include promotedToFeatureMemory: ${filePath}`);
+    if (!isStringArray(parsed.reusablePatterns)) issues.push(`manager handoff JSON must include reusablePatterns: ${filePath}`);
+    if (!isStringArray(parsed.continuationAdvice)) issues.push(`manager handoff JSON must include continuationAdvice: ${filePath}`);
   }
 
   return issues;
@@ -116,7 +116,7 @@ export async function validateTesterArtifacts(
 ): Promise<HandoffValidationResult> {
   const issues = [
     ...await validateMarkdownArtifact(testerNotesPath, ["## Tests written", "## Test guidelines followed", "## Notes for worker"], "tester notes"),
-    ...await validateMarkdownArtifact(handoffLogPath, ["## Tester", "## Worker", "## Reviewer", "## Chief"], "handoff log"),
+    ...await validateMarkdownArtifact(handoffLogPath, ["## Tester", "## Worker", "## Reviewer", "## Manager"], "handoff log"),
     ...await validateJsonArtifact(testerHandoffPath, "tester"),
   ];
   return { ok: issues.length === 0, issues };
@@ -127,7 +127,7 @@ export async function validateWorkerArtifacts(
   workerHandoffPath: string,
 ): Promise<HandoffValidationResult> {
   const issues = [
-    ...await validateMarkdownArtifact(handoffLogPath, ["## Worker", "## Reviewer", "## Chief"], "handoff log"),
+    ...await validateMarkdownArtifact(handoffLogPath, ["## Worker", "## Reviewer", "## Manager"], "handoff log"),
     ...await validateJsonArtifact(workerHandoffPath, "worker"),
   ];
   return { ok: issues.length === 0, issues };
@@ -140,23 +140,23 @@ export async function validateReviewerArtifacts(
 ): Promise<HandoffValidationResult> {
   const issues = [
     ...await validateMarkdownArtifact(reviewerNotesPath, ["## Verdict", "## Findings", "## Reviewer edits made", "## Evidence"], "reviewer notes"),
-    ...await validateMarkdownArtifact(handoffLogPath, ["## Reviewer", "## Chief"], "handoff log"),
+    ...await validateMarkdownArtifact(handoffLogPath, ["## Reviewer", "## Manager"], "handoff log"),
     ...await validateJsonArtifact(reviewerHandoffPath, "reviewer"),
   ];
   return { ok: issues.length === 0, issues };
 }
 
-export async function validateChiefArtifacts(
+export async function validateManagerArtifacts(
   workerContextPath: string,
   featureMemoryPath: string,
   handoffLogPath: string,
-  chiefHandoffPath: string,
+  managerHandoffPath: string,
 ): Promise<HandoffValidationResult> {
   const issues = [
     ...await validateMarkdownArtifact(workerContextPath, ["## Status", "## Files modified", "## Reviewer findings", "## Continuation notes"], "worker context"),
     ...await validateMarkdownArtifact(featureMemoryPath, ["## Patterns confirmed", "## Decisions", "## Pitfalls to avoid", "## Ticket learnings"], "feature memory"),
-    ...await validateMarkdownArtifact(handoffLogPath, ["## Chief"], "handoff log"),
-    ...await validateJsonArtifact(chiefHandoffPath, "chief"),
+    ...await validateMarkdownArtifact(handoffLogPath, ["## Manager"], "handoff log"),
+    ...await validateJsonArtifact(managerHandoffPath, "manager"),
   ];
   return { ok: issues.length === 0, issues };
 }

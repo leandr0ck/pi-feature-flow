@@ -50,9 +50,9 @@ export type TicketRegistry = {
  * - tester   : writes tests before implementation (TDD red phase)
  * - worker   : implements the ticket
  * - reviewer : reviews the implementation
- * - chief    : updates ticket state and maintains feature memory across tickets
+ * - manager  : updates ticket state and maintains feature memory across tickets
  */
-export type FeatureAgentRole = "planner" | "tester" | "worker" | "reviewer" | "chief";
+export type FeatureAgentRole = "planner" | "tester" | "worker" | "reviewer" | "manager" | "chief";
 
 export type FeatureAgentConfig = {
   /** Pi agent name to delegate to (e.g. "claude", "worker") */
@@ -63,6 +63,17 @@ export type FeatureAgentConfig = {
   thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
   /** Skill names to activate when running this role */
   skills?: string[];
+};
+
+export type CommandPreset = {
+  description?: string;
+  tdd?: boolean;
+  agents?: Partial<Record<FeatureAgentRole, FeatureAgentConfig>>;
+};
+
+export type FeatureProfileConfig = {
+  tdd?: boolean;
+  agents?: Partial<Record<FeatureAgentRole, FeatureAgentConfig>>;
 };
 
 export type FeatureFlowExecutionConfig = {
@@ -83,30 +94,13 @@ export type FeatureFlowConfig = {
   execution?: FeatureFlowExecutionConfig;
   /** Per-role agent configuration */
   agents?: Partial<Record<FeatureAgentRole, FeatureAgentConfig>>;
-  /** Named model tiers for reusable model+thinking combos */
-  modelTiers?: Record<string, ModelTierConfig>;
-  /** Skill+model overrides per ticket profile */
-  profiles?: Record<string, ProfileOverlay>;
-  /** Named command presets with override policies */
+  /** Optional slash-command presets */
   commands?: Record<string, CommandPreset>;
+  /** Optional named profiles used to overlay agent settings */
+  profiles?: Record<string, FeatureProfileConfig>;
 };
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
-
-export interface ModelTierConfig {
-  model: string;
-  thinking?: ThinkingLevel;
-}
-
-export interface CommandPreset {
-  description?: string;
-  tdd?: boolean;
-  agents?: Partial<Record<FeatureAgentRole, FeatureAgentConfig>>;
-}
-
-export interface ProfileOverlay {
-  agents?: Partial<Record<FeatureAgentRole, FeatureAgentConfig>>;
-}
 
 // ─── Execution ───────────────────────────────────────────────────────────────
 
@@ -132,6 +126,7 @@ export type ValidationIssue = {
     | "dependency-cycle"
     | "orphan-ticket"
     | "ticket-template-mismatch"
+    | "ticket-files-missing-test-path"
     | "execution-plan-template-mismatch";
   message: string;
   ticketId?: string;
@@ -149,7 +144,7 @@ export type FeatureValidationResult = {
 
 export type TicketCostEntry = {
   ticketId: string;
-  phase: "tester" | "worker" | "reviewer" | "chief";
+  phase: "tester" | "worker" | "reviewer" | "manager";
   runIndex: number;
   inputTokens: number;
   outputTokens: number;

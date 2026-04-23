@@ -14,11 +14,8 @@ function makeConfig(overrides: Record<string, unknown> = {}): any {
       tester: {},
       worker: {},
       reviewer: {},
-      chief: {},
+      manager: {},
     },
-    modelTiers: {},
-    profiles: {},
-    commands: {},
     ...overrides,
   };
 }
@@ -46,42 +43,21 @@ describe("renderSettingsPanel", () => {
     expect(panel).toContain("true");
   });
 
-  it("shows all model tiers with model and thinking", () => {
-    const cfg = makeConfig({
-      modelTiers: {
-        cheap: { model: "anthropic/claude-haiku-4", thinking: "off" },
-        balanced: { model: "anthropic/claude-sonnet-4", thinking: "medium" },
-      },
-    });
-    const panel = renderSettingsPanel(cfg, makeGate());
-    expect(panel).toContain("cheap");
-    expect(panel).toContain("anthropic/claude-haiku-4");
-    expect(panel).toContain("thinking=off");
-    expect(panel).toContain("balanced");
-    expect(panel).toContain("anthropic/claude-sonnet-4");
-  });
-
-  it("shows '— none configured —' when modelTiers is empty", () => {
-    const cfg = makeConfig();
-    const panel = renderSettingsPanel(cfg, makeGate());
-    expect(panel).toContain("— none configured —");
-  });
-
   it("shows all five roles with their models", () => {
     const cfg = makeConfig({
       agents: {
-        planner: { model: "balanced" },
-        tester: { model: "cheap" },
-        worker: { model: "balanced" },
-        reviewer: { model: "max" },
-        chief: { model: "cheap" },
+        planner: { model: "openai/gpt-4.1" },
+        tester: { model: "anthropic/claude-haiku-4" },
+        worker: { model: "anthropic/claude-sonnet-4" },
+        reviewer: { model: "openai/gpt-4.1" },
+        manager: { model: "anthropic/claude-sonnet-4" },
       },
     });
     const panel = renderSettingsPanel(cfg, makeGate());
     expect(panel).toContain("planner");
-    expect(panel).toContain("balanced");
-    expect(panel).toContain("cheap");
-    expect(panel).toContain("max");
+    expect(panel).toContain("openai/gpt-4.1");
+    expect(panel).toContain("anthropic/claude-haiku-4");
+    expect(panel).toContain("anthropic/claude-sonnet-4");
   });
 
   it("shows ✓ for clean config (no diagnostics)", () => {
@@ -97,21 +73,21 @@ describe("renderSettingsPanel", () => {
   });
 
   it("shows ✗ for error diagnostics", () => {
-    const gate = makeGate([{ level: "error", code: "missing_required_command_key", path: "commands.ff-fast", message: "entryFlow missing" }]);
+    const gate = makeGate([{ level: "error", code: "invalid_tdd", path: "tdd", message: "must be boolean" }]);
     const panel = renderSettingsPanel(makeConfig(), gate);
     expect(panel).toContain("✗");
-    expect(panel).toContain("missing_required_command_key");
+    expect(panel).toContain("invalid_tdd");
   });
 
   it("renders multiple diagnostics", () => {
     const gate = makeGate([
-      { level: "error", code: "missing_required_command_key", path: "commands.x", message: "entryFlow missing" },
+      { level: "error", code: "invalid_tdd", path: "tdd", message: "must be boolean" },
       { level: "warning", code: "unknown_key", path: "unknown", message: "ignored" },
     ]);
     const panel = renderSettingsPanel(makeConfig(), gate);
     expect(panel).toContain("✗");
     expect(panel).toContain("⚠");
-    expect(panel).toContain("missing_required_command_key");
+    expect(panel).toContain("invalid_tdd");
     expect(panel).toContain("unknown_key");
   });
 

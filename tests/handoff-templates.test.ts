@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  renderChiefHandoffJsonTemplate,
+  renderManagerHandoffJsonTemplate,
   renderFeatureMemoryTemplate,
   renderHandoffLogTemplate,
   renderReviewerHandoffJsonTemplate,
@@ -47,7 +47,7 @@ describe("handoff templates", () => {
     expect(content).toContain("## Worker");
     expect(content).toContain("## Reviewer");
     expect(content).toContain("Edits made");
-    expect(content).toContain("## Chief");
+    expect(content).toContain("## Manager");
   });
 
   it("renders feature memory template with fixed sections", () => {
@@ -63,7 +63,7 @@ describe("handoff templates", () => {
     expect(renderTesterHandoffJsonTemplate("STK-001")).toContain('"phase": "tester"');
     expect(renderWorkerHandoffJsonTemplate("STK-001")).toContain('"phase": "worker"');
     expect(renderReviewerHandoffJsonTemplate("STK-001")).toContain('"phase": "reviewer"');
-    expect(renderChiefHandoffJsonTemplate("STK-001")).toContain('"phase": "chief"');
+    expect(renderManagerHandoffJsonTemplate("STK-001")).toContain('"phase": "manager"');
   });
 
   it("wraps template content in markdown fences", () => {

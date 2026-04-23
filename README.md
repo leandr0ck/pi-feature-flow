@@ -33,7 +33,7 @@ That gives you smaller contexts, better traceability, and a reusable record of w
 - **Tester**: writes failing tests when `tdd: true`
 - **Worker**: implements the ticket
 - **Reviewer**: validates the implementation and can fix within ticket scope if needed
-- **Chief**: updates feature memory and continuation context
+- **Manager**: updates feature memory and continuation context
 
 ## Commands
 
@@ -72,27 +72,54 @@ If it does not exist, the extension creates it automatically when task flow star
 - `execution.autoAdvanceToNextTicket`: `true`
 - `execution.allowExternalToolCalls`: `false`
 
-### Example
+### Real config shape
 
 ```json
 {
   "specsRoot": "./docs",
-  "tdd": true,
+  "tdd": false,
+  "execution": {
+    "autoStartFirstTicketAfterPlanning": true,
+    "autoAdvanceToNextTicket": true,
+    "allowExternalToolCalls": false
+  },
   "agents": {
+    "planner": {
+      "agent": "claude",
+      "model": "anthropic/claude-sonnet-4",
+      "thinking": "low"
+    },
     "tester": {
+      "agent": "claude",
       "model": "anthropic/claude-haiku-4",
-      "thinking": "off"
+      "thinking": "off",
+      "skills": ["tdd"]
     },
     "worker": {
+      "agent": "claude",
       "model": "anthropic/claude-sonnet-4",
       "thinking": "medium"
     },
     "reviewer": {
-      "model": "openai/gpt-4.1"
+      "agent": "claude",
+      "model": "openai/gpt-4.1",
+      "thinking": "low"
+    },
+    "manager": {
+      "agent": "claude",
+      "model": "anthropic/claude-sonnet-4",
+      "thinking": "minimal",
+      "skills": ["context-engineering-advisor"]
     }
   }
 }
 ```
+
+### Notes
+
+- `agents` config is per role: `planner`, `tester`, `worker`, `reviewer`, `manager`.
+- Keep model values concrete and explicit, e.g. `anthropic/claude-sonnet-4`.
+- Role settings can override agent name, model, thinking level, and skills.
 
 ## Generated feature structure
 
@@ -111,7 +138,7 @@ If it does not exist, the extension creates it automatically when task flow star
       STK-001-reviewer-notes.md
       STK-001-reviewer-handoff.json
       STK-001-worker-context.md
-      STK-001-chief-handoff.json
+      STK-001-manager-handoff.json
       STK-001-handoff-log.md
 ```
 
