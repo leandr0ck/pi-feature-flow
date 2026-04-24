@@ -30,15 +30,35 @@ Do **not** assume upstream files, commands, or packages exist here unless verifi
 - `@mariozechner/pi-mom` — Slack bot / automation app
 - `@mariozechner/pi` (`packages/pods`) — GPU pod and vLLM management
 
-## Defaults
+## Cost and model philosophy
 
-If `.pi/feature-flow.json` is missing, the project creates it automatically when task flow starts.
+`pi-feature-flow` is designed to **spend reasoning where reasoning matters and optimize cost per phase**.
 
-Default config path:
-- `.pi/feature-flow.json`
+The core idea: **use the cheapest model that is still strong enough for the job**.
 
-Default docs/spec root:
-- `./docs`
+### Model tier guidance
+
+| Role | Task shape | Recommended tier |
+|------|------------|------------------|
+| **Planner** | high-judgment decomposition, sequencing, dependency reasoning | strong reasoning model |
+| **Tester** | narrow mechanical test authoring | cheap / lightweight model |
+| **Worker** | code synthesis, debugging, scope-safe implementation | strong implementation model |
+| **Reviewer** | correctness validation, scope control, regression detection | strong review model |
+| **Manager** | synthesis, abstraction, feature memory consolidation | strong synthesis model |
+
+The rule of thumb:
+- use **cheap models for narrow mechanical work** (e.g. writing structured JSON, test files, handoff logs)
+- use **stronger models for planning, review, and synthesis**
+
+### Your job as an agent
+
+When working on this codebase:
+1. **Detect model-tier mismatches**: if you see a cheap model being used for high-judgment tasks, or a strong model wasted on mechanical tasks — flag it
+2. **Suggest model improvements**: if the current config uses an expensive model where a cheaper one would suffice, suggest the change
+3. **Respect the tier per role**: if you modify role logic or add new phases, align the model tier to the task shape — do not default everything to the strongest model
+4. **Track cost per phase**: if adding a new role or phase, consider the cost model — the goal is better feature execution per dollar, not full automation
+
+The extension already switches models per role at runtime. Your job is to make sure the model choices match the task complexity.
 
 ## Rules
 

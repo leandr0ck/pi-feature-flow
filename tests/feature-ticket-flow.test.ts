@@ -142,7 +142,7 @@ describe("feature-ticket-flow governance", () => {
       pending,
     );
 
-    expect(decision?.reason).toContain("Planner may only read files inside the active feature directory");
+    expect(decision?.reason).toContain("Planner may only read files inside the active feature directory or the skills directory");
   });
 
   it("blocks planner writes outside the active feature directory", async () => {
@@ -175,6 +175,71 @@ describe("feature-ticket-flow governance", () => {
     );
 
     expect(decision?.reason).toContain("Planner may not use bash");
+  });
+
+  it("allows planner read of skills directory", async () => {
+    const pending: PendingExecution = {
+      kind: "feature-plan",
+      cwd: "/repo",
+      specsRoot: "/repo/docs",
+      feature: "demo",
+    };
+
+    const decision = await evaluateGovernanceForToolCall(
+      { toolName: "read", input: { path: "/repo/skills/feature-planning/SKILL.md" } },
+      pending,
+    );
+
+    expect(decision).toBeUndefined();
+  });
+
+  it("allows planner read of nested skill files", async () => {
+    const pending: PendingExecution = {
+      kind: "feature-plan",
+      cwd: "/repo",
+      specsRoot: "/repo/docs",
+      feature: "demo",
+    };
+
+    const decision = await evaluateGovernanceForToolCall(
+      { toolName: "read", input: { path: "/repo/skills/feature-execution/templates/some-template.md" } },
+      pending,
+    );
+
+    expect(decision).toBeUndefined();
+  });
+
+  it("blocks planner write inside skills directory", async () => {
+    const pending: PendingExecution = {
+      kind: "feature-plan",
+      cwd: "/repo",
+      specsRoot: "/repo/docs",
+      feature: "demo",
+    };
+
+
+    const decision = await evaluateGovernanceForToolCall(
+      { toolName: "write", input: { path: "/repo/skills/feature-planning/SKILL.md" } },
+      pending,
+    );
+
+    expect(decision?.reason).toContain("Planner may only write inside the active feature directory");
+  });
+
+  it("blocks planner edit inside skills directory", async () => {
+    const pending: PendingExecution = {
+      kind: "feature-plan",
+      cwd: "/repo",
+      specsRoot: "/repo/docs",
+      feature: "demo",
+    };
+
+    const decision = await evaluateGovernanceForToolCall(
+      { toolName: "edit", input: { path: "/repo/skills/feature-planning/SKILL.md" } },
+      pending,
+    );
+
+    expect(decision?.reason).toContain("Planner may only write inside the active feature directory");
   });
 });
 

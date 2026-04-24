@@ -14,34 +14,90 @@ export function renderTesterNotesTemplate(ticketId: string): string {
   ].join("\n");
 }
 
+export type HandoffPhase = "tester" | "worker" | "reviewer" | "manager";
+
+/**
+ * Phase-aware handoff log template.
+ * Only the current phase section has placeholders to fill.
+ * Future phase sections are shown as HTML comments to provide context
+ * but won't trigger the placeholder detector.
+ */
 export function renderHandoffLogTemplate(ticketId: string): string {
+  return renderHandoffLogTemplateForPhase(ticketId, "tester");
+}
+
+export function renderHandoffLogTemplateForPhase(ticketId: string, phase: HandoffPhase): string {
+  const sections: Record<HandoffPhase, string[]> = {
+    tester: [
+      "## Tester",
+      "- Tests written: <files and scope>",
+      "- Test guidelines followed: <project conventions used>",
+      "- Risks / assumptions: <none | bullets>",
+      "- Notes for worker: <key context>",
+      "",
+      "<!-- ## Worker section: filled by Worker phase after tests are implemented -->",
+      "",
+      "<!-- ## Reviewer section: filled by Reviewer phase after Worker completes -->",
+      "",
+      "<!-- ## Manager section: filled by Manager phase as final step -->",
+    ],
+    worker: [
+      "## Tester",
+      "- Tests written: <files and scope>",
+      "- Test guidelines followed: <project conventions used>",
+      "- Notes for worker: <key context>",
+      "",
+      "## Worker",
+      "- Files changed: <paths>",
+      "- Technical decisions: <none | bullets>",
+      "- Risks / tradeoffs: <none | bullets>",
+      "- Notes for reviewer/manager: <key context>",
+      "",
+      "<!-- ## Reviewer section: filled by Reviewer phase after Worker completes -->",
+      "",
+      "<!-- ## Manager section: filled by Manager phase as final step -->",
+    ],
+    reviewer: [
+      "## Tester",
+      "- Tests written: ...",
+      "- Notes for worker: ...",
+      "",
+      "## Worker",
+      "- Files changed: ...",
+      "- Technical decisions: ...",
+      "",
+      "## Reviewer",
+      "- Verifications: <checks performed>",
+      "- Findings: <none | bullets>",
+      "- Edits made: <none | tests added/updated | implementation adjusted>",
+      "- Residual risks: <none | bullets>",
+      "- Recommendation: <APPROVED | NEEDS-FIX | BLOCKED>",
+      "",
+      "<!-- ## Manager section: filled by Manager phase as final step -->",
+    ],
+    manager: [
+      "## Tester",
+      "- Tests written: ...",
+      "",
+      "## Worker",
+      "- Files changed: ...",
+      "- Technical decisions: ...",
+      "",
+      "## Reviewer",
+      "- Findings: ...",
+      "- Recommendation: ...",
+      "",
+      "## Manager",
+      "- Promoted to feature memory: <none | bullets>",
+      "- Reusable patterns for future tickets: <none | bullets>",
+      "- Continuation advice: <none | bullets>",
+    ],
+  };
+
   return [
     `# Handoff Log — ${ticketId}`,
     "",
-    "## Tester",
-    "- Tests written: <files and scope>",
-    "- Test guidelines followed: <project conventions used>",
-    "- Risks / assumptions: <none | bullets>",
-    "- Notes for worker: <key context>",
-    "",
-    "## Worker",
-    "- Files changed: <paths>",
-    "- Technical decisions: <none | bullets>",
-    "- Risks / tradeoffs: <none | bullets>",
-    "- Notes for reviewer/manager: <key context>",
-    "",
-    "## Reviewer",
-    "- Verifications: <checks performed>",
-    "- Findings: <none | bullets>",
-    "- Edits made: <none | tests added/updated | implementation adjusted>",
-    "- Residual risks: <none | bullets>",
-    "- Recommendation: <APPROVED | NEEDS-FIX | BLOCKED>",
-    "",
-    "## Manager",
-    "- Promoted to feature memory: <none | bullets>",
-    "- Reusable patterns for future tickets: <none | bullets>",
-    "- Continuation advice: <none | bullets>",
-    "",
+    ...sections[phase],
   ].join("\n");
 }
 
@@ -153,6 +209,8 @@ export function renderManagerHandoffJsonTemplate(ticketId: string): string {
     continuationAdvice: ["read feature memory before starting the next ticket"],
   }, null, 2);
 }
+
+
 
 export function toMarkdownCodeFence(content: string): string[] {
   return ["```md", ...content.trimEnd().split("\n"), "```"];

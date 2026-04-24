@@ -4,16 +4,35 @@ pi-feature-flow turns a feature spec into a durable, iterative execution workflo
 
 ## Why this exists
 
-This package is meant to reduce context rot.
+This package is meant to reduce context rot **and optimize model usage per task**.
 Instead of solving an entire feature in one large chat context, it:
 
 1. starts from a feature spec
 2. generates an execution plan and dependency-aware tickets
 3. executes one ticket at a time
 4. keeps each phase narrow and task-specific
-5. stores what was learned in durable feature memory
+5. uses different models for different kinds of work
+6. stores what was learned in durable feature memory
 
-That gives you smaller contexts, better traceability, and a reusable record of what was decided and implemented.
+That gives you smaller contexts, better traceability, lower token spend, and a reusable record of what was decided and implemented.
+
+### Cost and model philosophy
+
+`pi-feature-flow` is designed to **spend reasoning where reasoning matters**.
+
+The extension should:
+- **not** use an expensive reasoning model for simple mechanical tasks like writing straightforward failing tests or producing structured handoff JSON
+- **not** use a cheap lightweight model for high-judgment tasks like planning a feature, reviewing correctness, or consolidating reusable learnings
+- switch models **per role / per phase** so each step uses the cheapest model that is still strong enough for that job
+
+In practice, the workflow is optimized around this idea:
+- **Planner** gets a stronger reasoning model because it has to decompose the feature correctly
+- **Tester** gets a cheaper model because test authoring is narrower and more mechanical
+- **Worker** gets a stronger implementation model because it must make code changes safely
+- **Reviewer** gets a strong review model because correctness and scope control matter
+- **Manager** gets a stronger synthesis model because it decides what should persist into feature memory
+
+The goal is **better feature execution per dollar**, not just automation.
 
 ## Core workflow
 
@@ -27,13 +46,111 @@ That gives you smaller contexts, better traceability, and a reusable record of w
   → feature memory + handoff artifacts
 ```
 
+## Roles
+
+The workflow is driven by five coordinated agent roles. Each role has a narrow, focused responsibility and writes structured handoff artifacts for the next phase.
+
+| Role | Main job | Typical task shape | Default model strategy | Writes |
+|------|----------|--------------------|------------------------|--------|
+| **Planner** | Break the feature into a correct execution plan | high-judgment, dependency reasoning, sequencing | **strong reasoning model** | `02-execution-plan.md`, `tickets/*.md` |
+| **Tester** | Write the smallest failing tests for the ticket | narrow, mechanical, spec-to-test translation | **cheaper / lighter model** | `*-tester-notes.md`, `*-tester-handoff.json`, `*-handoff-log.md` |
+| **Worker** | Implement the ticket safely inside scope | code synthesis, debugging, local reasoning | **strong implementation model** | implementation files, `*-worker-handoff.json`, `*-handoff-log.md` |
+| **Reviewer** | Validate correctness and fix small gaps if needed | high-judgment review, scope control, regression detection | **strong review model** | `*-reviewer-notes.md`, `*-reviewer-handoff.json`, `*-handoff-log.md` |
+| **Manager** | Consolidate final learnings and continuation context | synthesis, abstraction, cross-ticket memory | **strong synthesis model** | `04-feature-memory.md`, `*-worker-context.md`, `*-manager-handoff.json`, `*-handoff-log.md` |
+
+### Artifact lifecycle per ticket
+
+```
+Planner
+  └─ 02-execution-plan.md       (shared, read by all)
+  └─ tickets/STK-001.md         (shared, read by all)
+
+Tester (tdd only)
+  ├─ *-tester-notes.md          → Worker reads
+  ├─ *-tester-handoff.json      → Worker reads
+  └─ *-handoff-log.md           → Reviewer + Manager read
+
+Worker
+  ├─ <implementation files>     → Reviewer inspects
+  ├─ *-worker-handoff.json      → Reviewer + Manager read
+  └─ *-handoff-log.md           → Reviewer + Manager read
+
+Reviewer
+  ├─ *-reviewer-notes.md        → Manager reads
+  ├─ *-reviewer-handoff.json    → Manager reads
+  └─ *-handoff-log.md           → Manager reads + updates
+
+Manager
+  ├─ 04-feature-memory.md       ← NEW / UPDATED (shared, read by Worker of next tickets)
+  ├─ *-worker-context.md        ← NEW (continuation notes for retries)
+  ├─ *-manager-handoff.json     ← NEW
+  └─ *-handoff-log.md           ← FINALIZED
+```
+
+### Who writes what, and with which model?
+
+This workflow is intentionally **role-routed by model**.
+
+| Output | Written by | Default model |
+|--------|------------|---------------|
+| `02-execution-plan.md` | Planner | `anthropic/claude-sonnet-4` |
+| `tickets/STK-*.md` | Planner | `anthropic/claude-sonnet-4` |
+| `*-tester-notes.md` | Tester | `anthropic/claude-haiku-4` |
+| `*-tester-handoff.json` | Tester | `anthropic/claude-haiku-4` |
+| implementation files | Worker | `anthropic/claude-sonnet-4` |
+| `*-worker-handoff.json` | Worker | `anthropic/claude-sonnet-4` |
+| `*-reviewer-notes.md` | Reviewer | `openai/gpt-4.1` |
+| `*-reviewer-handoff.json` | Reviewer | `openai/gpt-4.1` |
+| `04-feature-memory.md` | Manager | `anthropic/claude-sonnet-4` |
+| `*-worker-context.md` | Manager | `anthropic/claude-sonnet-4` |
+| `*-manager-handoff.json` | Manager | `anthropic/claude-sonnet-4` |
+
+The runtime/control files are **not written by a model**. They are written by the extension itself:
+- `03-ticket-registry.json`
+- `.pending-execution.json`
+- `feature-flow-history.jsonl`
+
+### Recommended model tiers by role
+
+Use the cheapest model that is still strong enough for the role.
+
+| Role | Recommended tier | Why |
+|------|------------------|-----|
+| **Planner** | strong reasoning model | Needs decomposition, sequencing, dependency analysis, and good judgment about ticket boundaries. |
+| **Tester** | cheap / lightweight model | Test authoring is usually narrower, more mechanical, and should be cheap to run repeatedly. |
+| **Worker** | strong implementation model | Needs reliable code editing, local debugging, and enough reasoning to stay within ticket scope. |
+| **Reviewer** | strong review model | Must catch correctness issues, scope creep, missing coverage, and regressions. |
+| **Manager** | strong synthesis model | Must decide what is worth preserving in feature memory and what future tickets should reuse. |
+
+A good default profile is:
+- **Planner** → Sonnet / GPT-4.1 class
+- **Tester** → Haiku / mini / low-cost class
+- **Worker** → Sonnet / GPT-4.1 class
+- **Reviewer** → GPT-4.1 / Sonnet class
+- **Manager** → Sonnet / GPT-4.1 class
+
+The rule of thumb is simple:
+- use **cheap models for narrow mechanical work**
+- use **stronger models for planning, review, and synthesis**
+
+### Execution order per ticket
+
+```
+[Planner] ──► [Tester*] ──► Worker ──► Reviewer ──► Manager
+                                    ▲           │
+                                    └───────────┘
+                                          (retry loop)
+```
+
+`* Tester` runs only when `tdd: true`. The retry loop (worker → reviewer → back to worker) handles `NEEDS-FIX` outcomes. `APPROVED` exits to Manager; `BLOCKED` halts the ticket.
+
 ### Phases
 
 - **Planner**: reads the spec and creates the execution plan + tickets
 - **Tester**: writes failing tests when `tdd: true`
 - **Worker**: implements the ticket
 - **Reviewer**: validates the implementation and can fix within ticket scope if needed
-- **Manager**: updates feature memory and continuation context
+- **Manager**: finalizes knowledge handoff, writes feature memory, worker context, handoff log, and manager JSON — then closes the ticket in the registry
 
 ## Commands
 

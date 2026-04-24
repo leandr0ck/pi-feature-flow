@@ -52,7 +52,7 @@ export type TicketRegistry = {
  * - reviewer : reviews the implementation
  * - manager  : updates ticket state and maintains feature memory across tickets
  */
-export type FeatureAgentRole = "planner" | "tester" | "worker" | "reviewer" | "manager" | "chief";
+export type FeatureAgentRole = "planner" | "tester" | "worker" | "reviewer" | "manager";
 
 export type FeatureAgentConfig = {
   /** Pi agent name to delegate to (e.g. "claude", "worker") */

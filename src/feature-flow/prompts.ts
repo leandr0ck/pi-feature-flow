@@ -4,7 +4,7 @@ import { buildExecutionPlanTemplateInstructions } from "../execution-plan-templa
 import {
   renderManagerHandoffJsonTemplate,
   renderFeatureMemoryTemplate,
-  renderHandoffLogTemplate,
+  renderHandoffLogTemplateForPhase,
   renderReviewerHandoffJsonTemplate,
   renderReviewerNotesTemplate,
   renderTesterHandoffJsonTemplate,
@@ -128,7 +128,7 @@ export function buildTesterPrompt(
     ...toMarkdownCodeFence(renderTesterNotesTemplate(ticketId)),
     "",
     "### Output format for handoff log update (exact template — update only the Tester section in this phase):",
-    ...toMarkdownCodeFence(renderHandoffLogTemplate(ticketId)),
+    ...toMarkdownCodeFence(renderHandoffLogTemplateForPhase(ticketId, "tester")),
     "",
     "### Structured tester handoff JSON (exact keys, valid JSON):",
     ...toJsonCodeFence(renderTesterHandoffJsonTemplate(ticketId)),
@@ -299,7 +299,7 @@ export function buildReviewerPrompt(
     ...toMarkdownCodeFence(renderReviewerNotesTemplate(ticketId)),
     "",
     "## Handoff log template (update only the Reviewer section in this phase)",
-    ...toMarkdownCodeFence(renderHandoffLogTemplate(ticketId)),
+    ...toMarkdownCodeFence(renderHandoffLogTemplateForPhase(ticketId, "reviewer")),
     "",
     "## Structured reviewer handoff JSON (exact keys, valid JSON)",
     ...toJsonCodeFence(renderReviewerHandoffJsonTemplate(ticketId)),
@@ -354,7 +354,7 @@ export function buildManagerPrompt(
     ...toMarkdownCodeFence(renderFeatureMemoryTemplate(feature)),
     "",
     "## Handoff log template (update only the Manager section in this phase)",
-    ...toMarkdownCodeFence(renderHandoffLogTemplate(ticketId)),
+    ...toMarkdownCodeFence(renderHandoffLogTemplateForPhase(ticketId, "manager")),
     "",
     "## Structured manager handoff JSON (exact keys, valid JSON)",
     ...toJsonCodeFence(renderManagerHandoffJsonTemplate(ticketId)),
@@ -366,6 +366,7 @@ export function buildManagerPrompt(
     "Include a one-line summary of what was recorded.",
   ].join("\n");
 }
+
 
 // ─── Subagent guidance ────────────────────────────────────────────────────────
 

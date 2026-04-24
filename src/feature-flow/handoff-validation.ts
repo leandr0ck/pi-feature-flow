@@ -1,14 +1,21 @@
 import { promises as fs } from "node:fs";
+import { HandoffPhase } from "../handoff-templates.js";
 
-export type HandoffPhase = "tester" | "worker" | "reviewer" | "manager";
+export type { HandoffPhase };
 
 export type HandoffValidationResult = {
   ok: boolean;
   issues: string[];
 };
 
+/**
+ * Detects unfilled template placeholders like <files and scope>.
+ * HTML comments (<!-- ... -->) are stripped first to avoid false positives
+ * from placeholder section markers that indicate future phases.
+ */
 function hasPlaceholderText(content: string): boolean {
-  return /<[^>]+>/.test(content);
+  const withoutComments = content.replace(/<!--[\s\S]*?-->/g, "");
+  return /<[^>]+>/.test(withoutComments);
 }
 
 function hasRequiredHeadings(content: string, headings: string[]): boolean {
@@ -59,6 +66,20 @@ async function validateMarkdownArtifact(
   const issues: string[] = [];
   if (!hasRequiredHeadings(content, headings)) issues.push(`${label} is missing required sections: ${filePath}`);
   if (hasPlaceholderText(content)) issues.push(`${label} still contains template placeholders: ${filePath}`);
+  return issues;
+}
+
+async function validateFeatureMemoryArtifact(filePath: string): Promise<string[]> {
+  const content = await readTextIfExists(filePath);
+  if (!content) return [`Missing feature memory: ${filePath}`];
+
+  const currentHeadings = ["## Patterns confirmed", "## Decisions", "## Pitfalls to avoid", "## Ticket learnings"];
+
+  const issues: string[] = [];
+  if (!hasRequiredHeadings(content, currentHeadings)) {
+    issues.push(`feature memory is missing required sections: ${filePath}`);
+  }
+  if (hasPlaceholderText(content)) issues.push(`feature memory still contains template placeholders: ${filePath}`);
   return issues;
 }
 
@@ -154,9 +175,11 @@ export async function validateManagerArtifacts(
 ): Promise<HandoffValidationResult> {
   const issues = [
     ...await validateMarkdownArtifact(workerContextPath, ["## Status", "## Files modified", "## Reviewer findings", "## Continuation notes"], "worker context"),
-    ...await validateMarkdownArtifact(featureMemoryPath, ["## Patterns confirmed", "## Decisions", "## Pitfalls to avoid", "## Ticket learnings"], "feature memory"),
+    ...await validateFeatureMemoryArtifact(featureMemoryPath),
     ...await validateMarkdownArtifact(handoffLogPath, ["## Manager"], "handoff log"),
     ...await validateJsonArtifact(managerHandoffPath, "manager"),
   ];
   return { ok: issues.length === 0, issues };
 }
+
+

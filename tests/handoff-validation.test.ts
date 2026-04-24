@@ -74,4 +74,5 @@ describe("handoff validation", () => {
     const managerResult = await validateManagerArtifacts(context, memory, managerLog, managerJson);
     expect(managerResult.ok).toBe(true);
   });
+
 });

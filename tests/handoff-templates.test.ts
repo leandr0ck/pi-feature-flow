@@ -3,6 +3,7 @@ import {
   renderManagerHandoffJsonTemplate,
   renderFeatureMemoryTemplate,
   renderHandoffLogTemplate,
+  renderHandoffLogTemplateForPhase,
   renderReviewerHandoffJsonTemplate,
   renderReviewerNotesTemplate,
   renderTesterHandoffJsonTemplate,
@@ -39,15 +40,64 @@ describe("handoff templates", () => {
     expect(content).toContain("## Continuation notes");
   });
 
-  it("renders handoff log with all role sections", () => {
+  it("renders handoff log (tester phase by default) with placeholders in Tester section and comments for future phases", () => {
     const content = renderHandoffLogTemplate("STK-001");
     expect(content).toContain("# Handoff Log — STK-001");
     expect(content).toContain("## Tester");
-    expect(content).toContain("Test guidelines followed");
-    expect(content).toContain("## Worker");
-    expect(content).toContain("## Reviewer");
-    expect(content).toContain("Edits made");
-    expect(content).toContain("## Manager");
+    expect(content).toContain("Tests written: <files and scope>");
+    expect(content).toContain("<!-- ## Worker section:");
+    expect(content).toContain("<!-- ## Reviewer section:");
+    expect(content).toContain("<!-- ## Manager section:");
+  });
+
+  describe("renderHandoffLogTemplateForPhase", () => {
+    it("renders tester phase with only Tester section placeholders and HTML comments for future phases", () => {
+      const content = renderHandoffLogTemplateForPhase("STK-001", "tester");
+      expect(content).toContain("# Handoff Log — STK-001");
+      expect(content).toContain("## Tester");
+      expect(content).toContain("Tests written: <files and scope>");
+      expect(content).toContain("<!-- ## Worker section:");
+      expect(content).toContain("<!-- ## Reviewer section:");
+      expect(content).toContain("<!-- ## Manager section:");
+      // Future phase sections should NOT have <...> placeholders
+      expect(content).not.toContain("## Worker\n- Files changed: <");
+      expect(content).not.toContain("## Reviewer\n- Verifications: <");
+      expect(content).not.toContain("## Manager\n- Promoted to feature memory: <");
+    });
+
+    it("renders worker phase with Tester and Worker sections", () => {
+      const content = renderHandoffLogTemplateForPhase("STK-001", "worker");
+      expect(content).toContain("## Tester");
+      expect(content).toContain("## Worker");
+      expect(content).toContain("Files changed: <paths>");
+      expect(content).toContain("<!-- ## Reviewer section:");
+      expect(content).toContain("<!-- ## Manager section:");
+    });
+
+    it("renders reviewer phase with Worker section filled and Reviewer section with placeholders", () => {
+      const content = renderHandoffLogTemplateForPhase("STK-001", "reviewer");
+      expect(content).toContain("## Tester");
+      expect(content).toContain("## Worker");
+      expect(content).toContain("## Reviewer");
+      expect(content).toContain("Verifications: <checks performed>");
+      expect(content).toContain("Recommendation: <APPROVED | NEEDS-FIX | BLOCKED>");
+      expect(content).toContain("<!-- ## Manager section:");
+    });
+
+    it("renders manager phase with all sections but only Manager has placeholders", () => {
+      const content = renderHandoffLogTemplateForPhase("STK-001", "manager");
+      expect(content).toContain("## Tester");
+      expect(content).toContain("## Worker");
+      expect(content).toContain("## Reviewer");
+      expect(content).toContain("## Manager");
+      expect(content).toContain("Promoted to feature memory: <none | bullets>");
+    });
+
+    it("renderHandoffLogTemplate defaults to tester phase", () => {
+      const template = renderHandoffLogTemplate("STK-001");
+      const explicit = renderHandoffLogTemplateForPhase("STK-001", "tester");
+      expect(template).toEqual(explicit);
+    });
   });
 
   it("renders feature memory template with fixed sections", () => {

@@ -16,7 +16,7 @@ import { FeatureFlowSettingsComponent } from "../src/ui/settings.js";
 import { resolveModelForRole } from "../src/model-tiers.js";
 import {
   areDependenciesDone,
-  chiefHandoffPath,
+  managerHandoffPath,
   featureCostPath,
   featureMemoryPath,
   handoffLogPath,
@@ -39,7 +39,7 @@ import {
 import { renderStatus, renderValidation } from "../src/render.js";
 import { resolveFeatureSlug, validateBeforeExecution } from "../src/feature-flow/guards.js";
 import {
-  buildChiefPrompt,
+  buildManagerPrompt,
   buildFeaturePlanningPrompt,
   buildReviewerPrompt,
   buildSubagentGuidance,
@@ -49,7 +49,7 @@ import {
 } from "../src/feature-flow/prompts.js";
 import { getForbiddenBashDecision } from "../src/feature-flow/bash-governance.js";
 import {
-  validateChiefArtifacts,
+  validateManagerArtifacts,
   validateReviewerArtifacts,
   validateTesterArtifacts,
   validateWorkerArtifacts,
@@ -335,9 +335,9 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         "STEP 8. Say APPROVED only if ALL ACs are met, tests pass, and typecheck is clean. Otherwise NEEDS-FIX.",
         "",
       );
-    } else if (phase === "CHIEF") {
+    } else if (phase === "MANAGER") {
       lines.push(
-        "--- CHIEF PROTOCOL (NON-NEGOTIABLE) ---",
+        "--- MANAGER PROTOCOL (NON-NEGOTIABLE) ---",
         `STEP 1. Append a dated entry to ${featureMemoryPath(specsRoot, feature)} with decisions and patterns from this ticket.`,
         `STEP 2. Write ${workerContextPath(specsRoot, feature, ticketId)} summarising status, files modified, and reviewer findings.`,
         "STEP 3. Say APPROVED when both files are written.",
@@ -465,7 +465,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         if (!validation.ok) {
           parsed = {
             status: "needs_fix",
-            note: `APPROVED was reported but tester artifacts were incomplete: ${validation.issues.join("; ")}`,
+            note: `tester artifacts validation failed: ${validation.issues.join("; ")}. Ensure the handoff log only contains the filled Tester section — future phase sections should remain as HTML comments (<!-- ... -->).`,
           };
         }
       }
@@ -478,7 +478,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
           if (!validation.ok) {
             parsed = {
               status: "needs_fix",
-              note: `APPROVED was reported but worker artifacts were incomplete: ${validation.issues.join("; ")}`,
+              note: `worker artifacts validation failed: ${validation.issues.join("; ")}`,
             };
           }
         }
@@ -491,24 +491,12 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
           if (!validation.ok) {
             parsed = {
               status: "needs_fix",
-              note: `APPROVED was reported but reviewer artifacts were incomplete: ${validation.issues.join("; ")}`,
+              note: `reviewer artifacts validation failed: ${validation.issues.join("; ")}`,
             };
           }
         }
 
-        if (pending.executionRole === "chief") {
-          const contextPath = workerContextPath(pending.specsRoot, pending.feature, pending.ticketId);
-          const memoryPath = featureMemoryPath(pending.specsRoot, pending.feature);
-          const logPath = handoffLogPath(pending.specsRoot, pending.feature, pending.ticketId);
-          const chiefJsonPath = chiefHandoffPath(pending.specsRoot, pending.feature, pending.ticketId);
-          const validation = await validateChiefArtifacts(contextPath, memoryPath, logPath, chiefJsonPath);
-          if (!validation.ok) {
-            parsed = {
-              status: "needs_fix",
-              note: `APPROVED was reported but chief artifacts were incomplete: ${validation.issues.join("; ")}`,
-            };
-          }
-        }
+
       }
 
       // Track run completion in history
@@ -633,7 +621,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         return;
       }
 
-      // ticket-execution outcome (worker → reviewer → chief)
+      // ticket-execution outcome (worker → reviewer → manager)
       const registry = await loadRegistry(pending.specsRoot, pending.feature);
       const ticket = getTicket(registry, pending.ticketId);
       if (!ticket) return;
@@ -673,8 +661,8 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         }
 
         if (pending.executionRole === "reviewer") {
-          ctx.ui.notify(`Reviewer done for ${pending.ticketId}. Starting chief...`, "info");
-          await launchChiefPhase(
+          ctx.ui.notify(`Reviewer done for ${pending.ticketId}. Starting manager...`, "info");
+          await launchManagerPhase(
             pi,
             ctx,
             pending.feature,
@@ -1143,7 +1131,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
 
 // ─── Preset command registration ─────────────────────────────────────────────────
 
-type GovernancePhase = "PLANNER" | "TESTER" | "WORKER" | "REVIEWER" | "CHIEF" | "UNKNOWN";
+type GovernancePhase = "PLANNER" | "TESTER" | "WORKER" | "REVIEWER" | "MANAGER" | "UNKNOWN";
 
 const registeredPresetCommands = new Set<string>();
 
@@ -1274,12 +1262,12 @@ type GovernanceContext = {
   workerHandoffPath?: string;
   handoffLogPath?: string;
   featureMemoryPath?: string;
-  chiefHandoffPath?: string;
+  managerHandoffPath?: string;
 };
 
 type RoleRuntimeContext = Pick<ExtensionContext, "modelRegistry" | "model" | "ui">;
-type FlowRole = "planner" | "tester" | "worker" | "reviewer" | "chief";
-type ExecutionRole = "worker" | "reviewer" | "chief";
+type FlowRole = "planner" | "tester" | "worker" | "reviewer" | "manager";
+type ExecutionRole = "worker" | "reviewer" | "manager";
 type UsageTotals = {
   inputTokens: number;
   outputTokens: number;
@@ -1350,6 +1338,9 @@ export async function evaluateGovernanceForToolCall(
     const featureRoot = governance.specsRoot && governance.feature
       ? path.join(governance.specsRoot, governance.feature)
       : undefined;
+    const skillsRoot = governance.cwd
+      ? path.join(governance.cwd, "skills")
+      : undefined;
 
     if (event.toolName === "bash") {
       return {
@@ -1361,9 +1352,16 @@ export async function evaluateGovernanceForToolCall(
     if (featureRoot && (event.toolName === "read" || event.toolName === "write" || event.toolName === "edit")) {
       const filePath = ((event.input as any)?.path ?? "") as string;
       const resolvedPath = resolveCandidatePath(governance.cwd, filePath);
+
       if (!isWithinPath(resolvedPath, featureRoot)) {
-        const reason = event.toolName === "read"
-          ? `Planner may only read files inside the active feature directory. Path: '${filePath}'. Respond BLOCKED instead of working around this restriction.`
+        const isRead = event.toolName === "read";
+        // Read-only exception: allow skills directory for PLANNER.
+        // Write/edit remain blocked regardless of location.
+        if (isRead && skillsRoot && isWithinPath(resolvedPath, skillsRoot)) {
+          return undefined;
+        }
+        const reason = isRead
+          ? `Planner may only read files inside the active feature directory or the skills directory. Path: '${filePath}'. Respond BLOCKED instead of working around this restriction.`
           : `Planner may only write inside the active feature directory. Path: '${filePath}'. Respond BLOCKED instead of working around this restriction.`;
         return { block: true, reason };
       }
@@ -1440,7 +1438,7 @@ async function buildGovernanceContext(
   context.workerHandoffPath = workerHandoffPath(context.specsRoot, context.feature, context.ticketId);
   context.handoffLogPath = handoffLogPath(context.specsRoot, context.feature, context.ticketId);
   context.featureMemoryPath = featureMemoryPath(context.specsRoot, context.feature);
-  context.chiefHandoffPath = chiefHandoffPath(context.specsRoot, context.feature, context.ticketId);
+  context.managerHandoffPath = managerHandoffPath(context.specsRoot, context.feature, context.ticketId);
 
   const ticketPath = path.join(context.specsRoot, context.feature, "tickets", `${context.ticketId}.md`);
   const ticketContent = await fsPromises.readFile(ticketPath, "utf8").catch(() => "");
@@ -1528,12 +1526,12 @@ function getPhaseWriteDecision(
     };
   }
 
-  if (governance.phase === "CHIEF") {
-    if (resolvedPath === governance.featureMemoryPath || resolvedPath === governance.workerContextPath || resolvedPath === governance.chiefHandoffPath || resolvedPath === governance.handoffLogPath) return undefined;
+  if (governance.phase === "MANAGER") {
+    if (resolvedPath === governance.featureMemoryPath || resolvedPath === governance.workerContextPath || resolvedPath === governance.managerHandoffPath || resolvedPath === governance.handoffLogPath) return undefined;
     return {
       block: true,
       reason:
-        `CHIEF PHASE VIOLATION: Chief may only write '${governance.featureMemoryPath}', '${governance.workerContextPath}', '${governance.chiefHandoffPath}', and '${governance.handoffLogPath}'.`,
+        `MANAGER PHASE VIOLATION: Manager may only write '${governance.featureMemoryPath}', '${governance.workerContextPath}', '${governance.managerHandoffPath}', and '${governance.handoffLogPath}'.`,
     };
   }
 
@@ -2072,7 +2070,7 @@ async function launchReviewerPhase(
   pi.sendUserMessage(message);
 }
 
-async function launchChiefPhase(
+async function launchManagerPhase(
   pi: ExtensionAPI,
   ctx: RoleRuntimeContext | undefined,
   feature: string,
@@ -2085,8 +2083,8 @@ async function launchChiefPhase(
   config?: Awaited<ReturnType<typeof loadConfig>>,
 ) {
   const resolvedConfig = config ?? (await loadConfig(cwd));
-  const chiefModelOk = await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "chief", profileName);
-  if (!chiefModelOk) return;
+  const managerModelOk = await applyRoleRuntimeConfig(pi, ctx, resolvedConfig, "manager", profileName);
+  if (!managerModelOk) return;
 
   const featureDir = path.join(specsRoot, feature);
   const ticketPath = path.join(featureDir, "tickets", `${ticketId}.md`);
@@ -2094,10 +2092,10 @@ async function launchChiefPhase(
   const reviewPath = reviewerNotesPath(specsRoot, feature, ticketId);
   const contextPath = workerContextPath(specsRoot, feature, ticketId);
   const logPath = handoffLogPath(specsRoot, feature, ticketId);
-  const chiefJsonPath = chiefHandoffPath(specsRoot, feature, ticketId);
+  const managerJsonPath = managerHandoffPath(specsRoot, feature, ticketId);
 
   const message = [
-    buildChiefPrompt(feature, ticketId, featureDir, ticketPath, memPath, reviewPath, contextPath, logPath, chiefJsonPath, resolvedConfig),
+    buildManagerPrompt(feature, ticketId, featureDir, ticketPath, memPath, reviewPath, contextPath, logPath, managerJsonPath, resolvedConfig),
     "",
     "## Subagent guidance",
     ...buildSubagentGuidance(resolvedConfig, "execution"),
@@ -2105,7 +2103,7 @@ async function launchChiefPhase(
 
   const execPending = {
     kind: "ticket-execution" as const,
-    executionRole: "chief" as const,
+    executionRole: "manager" as const,
     feature,
     ticketId,
     phase,

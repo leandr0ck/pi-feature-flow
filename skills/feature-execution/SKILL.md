@@ -83,21 +83,24 @@ The worker agent receives a separate prompt that includes the tester notes path.
 ### Manager
 After the reviewer gives the green light:
 
-1. **Append a dated entry** to `04-feature-memory.md` (cumulative, cross-ticket):
+1. **Append the ticket learnings to `04-feature-memory.md`** (cumulative, cross-ticket):
+   - Add the ticket's reusable learnings under the existing structured sections.
+   - Keep the file in this canonical format:
    ```md
-   ### After <ticket-id> — <ISO date>
-   - <technical decision made>
-   - <pattern discovered (reusable utils, conventions, traps)>
-   - <anything that will help the next ticket start faster>
-   ```
-   If the file does not exist, create it with this header first:
-   ```md
-   # Feature Memory: <feature>
+   # Feature Memory — <feature>
 
-   Accumulated context built ticket by ticket. Read this before starting each new ticket.
+   ## Patterns confirmed
+   - <reusable patterns that worked>
 
-   ## Accumulated Context
-   - (the manager fills this in over time)
+   ## Decisions
+   - <important technical or product decisions>
+
+   ## Pitfalls to avoid
+   - <mistakes, traps, or regressions to avoid>
+
+   ## Ticket learnings
+   ### <feature>
+   - <ISO date> <ticket-id>: <summary of what future tickets should reuse>
    ```
 
 2. **Write `tickets/<ticket-id>-worker-context.md`** (per-ticket, per-attempt — used on retry):
