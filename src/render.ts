@@ -1,5 +1,10 @@
 import type { FeatureValidationResult, TicketRecord, ValidationIssue } from "./types.js";
 
+function ticketTimestamp(ticket: TicketRecord): number {
+  const value = Date.parse(ticket.updatedAt || ticket.completedAt || ticket.startedAt || "");
+  return Number.isNaN(value) ? 0 : value;
+}
+
 export function renderStatus(registry: import("./types.js").TicketRegistry): string {
   const byStatus = {
     done: registry.tickets.filter((t) => t.status === "done"),
@@ -34,6 +39,46 @@ export function renderStatus(registry: import("./types.js").TicketRegistry): str
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+export function renderFeatureStatusSummary(registry: import("./types.js").TicketRegistry): string {
+  const counts = {
+    done: registry.tickets.filter((t) => t.status === "done").length,
+    inProgress: registry.tickets.filter((t) => t.status === "in_progress").length,
+    needsFix: registry.tickets.filter((t) => t.status === "needs_fix").length,
+    pending: registry.tickets.filter((t) => t.status === "pending").length,
+    blocked: registry.tickets.filter((t) => t.status === "blocked").length,
+  };
+
+  const latest = [...registry.tickets].sort((a, b) => ticketTimestamp(b) - ticketTimestamp(a))[0];
+  if (!latest) {
+    return [
+      `Feature: ${registry.feature}`,
+      "No tickets found.",
+    ].join("\n");
+  }
+
+  const nextActionable =
+    registry.tickets.find((t) => t.status === "needs_fix" && areDependenciesDone(t, registry))
+    ?? registry.tickets.find((t) => t.status === "pending" && areDependenciesDone(t, registry));
+
+  const lines = [
+    `Feature: ${registry.feature}`,
+    `Last ticket: ${latest.id} — ${latest.title}`,
+    `Status: ${latest.status}`,
+    `Updated: ${latest.updatedAt}`,
+    `Counts: done=${counts.done} | in_progress=${counts.inProgress} | needs_fix=${counts.needsFix} | pending=${counts.pending} | blocked=${counts.blocked}`,
+    `Next actionable: ${nextActionable ? `${nextActionable.id} — ${nextActionable.title} (${nextActionable.status})` : "none"}`,
+  ];
+
+  if (latest.blockedReason) lines.push(`Reason: ${latest.blockedReason}`);
+
+  const lastRun = latest.runs.at(-1);
+  if (lastRun) {
+    lines.push(`Last run: ${lastRun.mode}${lastRun.outcome ? ` -> ${lastRun.outcome}` : ""}`);
+  }
+
+  return lines.join("\n");
 }
 
 export function renderValidation(result: FeatureValidationResult): string {

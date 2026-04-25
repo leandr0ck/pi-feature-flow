@@ -5,6 +5,7 @@ import {
   areDependenciesDone,
   startTicketRun,
   resolveTicketStatus,
+  setTicketStatus,
   getTicket,
 } from "../src/registry.js";
 
@@ -232,5 +233,71 @@ describe("resolveTicketStatus", () => {
     const registry = makeRegistry([]);
 
     expect(() => resolveTicketStatus(registry, "STK-999", "done")).toThrow("STK-999");
+  });
+});
+
+// ─── setTicketStatus ───────────────────────────────────────────────────────────
+
+describe("setTicketStatus", () => {
+  it("sets status to pending, clears blockedReason and completedAt, and leaves open runs without an outcome", () => {
+    const registry = makeRegistry([
+      makeTicket("STK-001", {
+        status: "blocked",
+        blockedReason: "Missing dependency",
+        completedAt: new Date().toISOString(),
+        runs: [{ startedAt: new Date().toISOString(), mode: "start" }],
+      }),
+    ]);
+
+    setTicketStatus(registry, "STK-001", "pending");
+
+    const ticket = getTicket(registry, "STK-001")!;
+    expect(ticket.status).toBe("pending");
+    expect(ticket.blockedReason).toBeUndefined();
+    expect(ticket.completedAt).toBeUndefined();
+    expect(ticket.runs[0]!.finishedAt).toBeDefined();
+    expect(ticket.runs[0]!.outcome).toBeUndefined();
+  });
+
+  it("sets status to blocked with a reason", () => {
+    const registry = makeRegistry([makeTicket("STK-001", { status: "pending" })]);
+
+    setTicketStatus(registry, "STK-001", "blocked", "API not available");
+
+    const ticket = getTicket(registry, "STK-001")!;
+    expect(ticket.status).toBe("blocked");
+    expect(ticket.blockedReason).toBe("API not available");
+  });
+
+  it("sets status to done, clears blockedReason, and records completedAt", () => {
+    const registry = makeRegistry([makeTicket("STK-001", { status: "in_progress", blockedReason: "Old reason" })]);
+
+    setTicketStatus(registry, "STK-001", "done");
+
+    const ticket = getTicket(registry, "STK-001")!;
+    expect(ticket.status).toBe("done");
+    expect(ticket.blockedReason).toBeUndefined();
+    expect(ticket.completedAt).toBeDefined();
+  });
+
+  it("closes any open run with the status as outcome", () => {
+    const registry = makeRegistry([
+      makeTicket("STK-001", {
+        status: "in_progress",
+        runs: [{ startedAt: new Date().toISOString(), mode: "start" }],
+      }),
+    ]);
+
+    setTicketStatus(registry, "STK-001", "blocked");
+
+    const ticket = getTicket(registry, "STK-001")!;
+    expect(ticket.runs[0]!.finishedAt).toBeDefined();
+    expect(ticket.runs[0]!.outcome).toBe("blocked");
+  });
+
+  it("throws when ticketId is not found", () => {
+    const registry = makeRegistry([]);
+
+    expect(() => setTicketStatus(registry, "STK-999", "pending")).toThrow("STK-999");
   });
 });

@@ -10,6 +10,7 @@ import { getForbiddenBashDecision, isSafeValidationCommand } from "../src/featur
 import { evaluateGovernanceForToolCall } from "../extensions/feature-ticket-flow.js";
 
 process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || "test-key";
+process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "test-key";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -50,6 +51,14 @@ function currentModelRef(t: TestSession): string | undefined {
     ?? ((t.session.agent as { state?: { model?: { provider?: string; id?: string } } }).state?.model);
   if (!model?.provider || !model?.id) return undefined;
   return `${model.provider}/${model.id}`;
+}
+
+function currentThinkingLevel(t: TestSession): string | undefined {
+  const session = t.session as {
+    thinkingLevel?: string;
+    agent?: { state?: { thinkingLevel?: string } };
+  };
+  return session.agent?.state?.thinkingLevel ?? session.thinkingLevel;
 }
 
 
@@ -639,6 +648,8 @@ describe("feature-ticket-flow integration", () => {
     expect(userMessages).toContain("tester-notes");
     expect(userMessages).toContain("handoff log");
     expect(userMessages).toContain("Do NOT run the test suite");
+    expect(userMessages).toContain("Write tests only in paths explicitly listed in the ticket");
+    expect(userMessages).toContain("respond BLOCKED instead of creating a new test file outside scope");
   });
 
   it("preserves retry phase in the tester checkpoint when TDD is enabled", async () => {
@@ -716,6 +727,31 @@ describe("feature-ticket-flow integration", () => {
     expect(userMessages).toContain("Worker phase");
     expect(userMessages).not.toContain("Reviewer phase");
     expect(currentModelRef(t)).toBe("openai/gpt-4.1-mini");
+  });
+
+  it("restores the user's thinking level after the flow shuts down", async () => {
+    t = await createTestSession({
+      extensions: [EXTENSION_PATH],
+      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+      mockUI: { select: 0 },
+    });
+
+    const initialThinking = currentThinkingLevel(t);
+    const overrideThinking = initialThinking === "low" ? "medium" : "low";
+    const modelRegistry = (t.session as { modelRegistry?: { getAvailable: () => Array<{ provider: string; id: string }> } }).modelRegistry;
+    const targetModel = modelRegistry?.getAvailable().find((model) =>
+      model.id.includes("gpt-5.2") || model.id.includes("gpt-5.3") || model.id.includes("gpt-5.4") || model.id.includes("opus-4-6") || model.id.includes("opus-4.6"),
+    );
+    expect(targetModel).toBeDefined();
+
+    await (t.session as { setModel: (model: unknown) => Promise<void> }).setModel(targetModel);
+    await (t.session as { setThinkingLevel: (level: string) => void }).setThinkingLevel(overrideThinking);
+    expect(currentThinkingLevel(t)).toBe(overrideThinking);
+
+    await (t.session as { reload: () => Promise<void> }).reload();
+    await settleSession(t, 150);
+
+    expect(currentThinkingLevel(t)).toBe(initialThinking);
   });
 
   it("sends worker prompt first when TDD is disabled", async () => {
@@ -915,6 +951,35 @@ describe("feature-ticket-flow integration", () => {
     expect(userMessages).toContain("Phase: start");
     expect(userMessages).toContain("handoff log");
     expect(userMessages).toContain("feature-execution");
+  });
+
+  it("reopens a blocked ticket via /feature-ticket-mark-pending and persists the registry update", async () => {
+    t = await createTestSession({
+      extensions: [EXTENSION_PATH],
+      mockTools: { bash: "ok", read: "ok", write: "ok", edit: "ok" },
+      mockUI: { select: 0 },
+    });
+
+    await seedFeature(t.cwd, "manual-unblock", [
+      { id: "STK-001", body: validTicket("STK-001") },
+    ]);
+
+    const { specsRoot } = await featurePaths(t.cwd, "manual-unblock");
+    const registry = await loadRegistry(specsRoot, "manual-unblock");
+    registry.tickets[0]!.status = "blocked";
+    registry.tickets[0]!.blockedReason = "Manual fix needed";
+    await saveRegistry(specsRoot, "manual-unblock", registry);
+
+    patchHarnessCompatibility(t);
+    await t.run(when("/feature-ticket-mark-pending manual-unblock", []));
+    await settleSession(t, 100);
+
+    const updated = await loadRegistry(specsRoot, "manual-unblock");
+    expect(updated.tickets[0]!.status).toBe("pending");
+    expect(updated.tickets[0]!.blockedReason).toBeUndefined();
+
+    const notifications = t.events.uiCallsFor("notify");
+    expect(notifications.some((call) => String(call.args[0]).includes("pending"))).toBe(true);
   });
 
 });

@@ -1,6 +1,7 @@
 import path from "node:path";
 import { promises as fsPromises } from "node:fs";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { CommandPreset, FeatureAgentRole, FeatureFlowConfig } from "../src/types.js";
 import {
   loadConfig,
@@ -10,8 +11,8 @@ import {
   shouldAutoStartFirstTicketAfterPlanning,
 } from "../src/config.js";
 import { createRuntimeConfigStore, ensureConfigFile } from "../src/config-store.js";
-import { startRun, updateRun, finishRun, type Phase } from "../src/run-history.js";
-import { FeatureFlowStatusComponent } from "../src/ui/status.js";
+import { startRun, updateRun, finishRun, getActiveRuns, getRecentRuns, type Phase } from "../src/run-history.js";
+import { renderFeatureFlowStatusSummary } from "../src/ui/status.js";
 import { FeatureFlowSettingsComponent } from "../src/ui/settings.js";
 import { resolveModelForRole } from "../src/model-tiers.js";
 import {
@@ -33,10 +34,11 @@ import {
   loadRegistry,
   recordTicketCost,
   resolveTicketStatus,
+  setTicketStatus,
   saveRegistry,
   startTicketRun,
 } from "../src/registry.js";
-import { renderStatus, renderValidation } from "../src/render.js";
+import { renderFeatureStatusSummary, renderStatus, renderValidation } from "../src/render.js";
 import { resolveFeatureSlug, validateBeforeExecution } from "../src/feature-flow/guards.js";
 import {
   buildManagerPrompt,
@@ -76,6 +78,8 @@ import { createFeatureCompletions } from "../src/feature-flow/ui.js";
 import { validateFeature } from "../src/validation.js";
 
 let activeModelLabel: string | undefined;
+let sessionThinkingLevel: ThinkingLevel | undefined;
+let thinkingOverrideActive = false;
 
 // ─── Config gate helpers ───────────────────────────────────────────────────────
 
@@ -148,6 +152,12 @@ function updateFeatureFlowStatus(
     "feature-flow",
     buildFeatureFlowStatusLabel(pending, activeModelLabel ?? formatModelLabel(ctx.model), thinkingLevel),
   );
+}
+
+function restoreSessionThinkingLevel(pi: ExtensionAPI) {
+  if (sessionThinkingLevel === undefined) return;
+  pi.setThinkingLevel(sessionThinkingLevel);
+  thinkingOverrideActive = false;
 }
 
 async function clearStalePendingExecution(
@@ -385,11 +395,16 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
 
   pi.on("agent_end", async (_statusEvent, ctx) => {
     ctx.ui.setStatus("feature-flow", "");
+    if (!getPendingExecution()) {
+      restoreSessionThinkingLevel(pi);
+    }
   });
 
   // ── Auto-advance on agent_end ──────────────────────────────────────────────
   pi.on("session_start", async (_event, ctx) => {
     activeModelLabel = formatModelLabel(ctx.model);
+    sessionThinkingLevel = pi.getThinkingLevel();
+    thinkingOverrideActive = false;
 
     // Show config diagnostics summary (if any)
     notifyConfigDiagnostics(ctx);
@@ -437,31 +452,36 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     }
   });
 
+  pi.on("session_shutdown", async () => {
+    restoreSessionThinkingLevel(pi);
+  });
+
   // ── Auto-advance on agent_end ──────────────────────────────────────────────
   pi.on("agent_end", async (event, ctx) => {
     const pending = getPendingExecution();
-    if (!pending) return;
-
-    let parsed = parseOutcome(event.messages);
-    if (!parsed) {
-      emitInfo(
-        pi,
-        [
-          "Could not determine agent outcome.",
-          "Expected one of: APPROVED, BLOCKED, NEEDS-FIX.",
-          "Keeping checkpoint so the phase can be resumed safely.",
-        ].join("\n"),
-      );
-      ctx.ui.notify("Could not determine agent outcome. Checkpoint preserved for resume.", "warning");
-      return;
-    }
-
     try {
+      if (!pending) return;
+
+      let parsed = parseOutcome(event.messages);
+      if (!parsed) {
+        emitInfo(
+          pi,
+          [
+            "Could not determine agent outcome.",
+            "Expected one of: APPROVED, BLOCKED, NEEDS-FIX.",
+            "Keeping checkpoint so the phase can be resumed safely.",
+          ].join("\n"),
+        );
+        ctx.ui.notify("Could not determine agent outcome. Checkpoint preserved for resume.", "warning");
+        return;
+      }
+
       if (pending.kind === "ticket-tester" && parsed.status === "done") {
         const notesPath = testerNotesPath(pending.specsRoot, pending.feature, pending.ticketId);
         const logPath = handoffLogPath(pending.specsRoot, pending.feature, pending.ticketId);
         const testerJsonPath = testerHandoffPath(pending.specsRoot, pending.feature, pending.ticketId);
-        const validation = await validateTesterArtifacts(notesPath, logPath, testerJsonPath);
+        const ticketPath = path.join(pending.specsRoot, pending.feature, "tickets", `${pending.ticketId}.md`);
+        const validation = await validateTesterArtifacts(notesPath, logPath, testerJsonPath, ticketPath);
         if (!validation.ok) {
           parsed = {
             status: "needs_fix",
@@ -586,6 +606,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         // Record tester cost
         await recordTicketCost(pending.specsRoot, pending.feature, pending.ticketId, "tester", 0, {
           ...usage,
+          model: activeModelLabel,
           recordedAt: now,
         });
 
@@ -633,6 +654,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
 
       await recordTicketCost(pending.specsRoot, pending.feature, pending.ticketId, pending.executionRole, runIndex, {
         ...usage,
+        model: activeModelLabel,
         recordedAt: now,
       });
 
@@ -707,6 +729,10 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       ctx.ui.notify(`Could not auto-update ticket: ${message}`, "error");
+    } finally {
+      if (!getPendingExecution()) {
+        restoreSessionThinkingLevel(pi);
+      }
     }
   });
 
@@ -1023,7 +1049,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       if (!feature) return;
 
       const registry = await loadRegistry(specsRoot, feature);
-      emitInfo(pi, renderStatus(registry));
+      emitInfo(pi, renderFeatureStatusSummary(registry));
     },
   });
 
@@ -1061,28 +1087,95 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         return;
       }
 
-      const perTicket = new Map<string, { total: number; runs: number }>();
+      const perTicket = new Map<string, { total: number; runs: number; phases: Array<{ phase: string; cost: number; model?: string }> }>();
       for (const e of cost.entries) {
         const key = e.ticketId;
-        const existing = perTicket.get(key) ?? { total: 0, runs: 0 };
+        const existing = perTicket.get(key) ?? { total: 0, runs: 0, phases: [] };
         existing.total += e.costUsd;
         existing.runs += 1;
+        existing.phases.push({ phase: e.phase, cost: e.costUsd, model: e.model });
         perTicket.set(key, existing);
       }
 
       const lines = [
         `**Cost for ${feature}**: $${cost.totalCostUsd.toFixed(4)}`,
         "",
-        "| Ticket | Runs | Cost |",
-        "|--------|------|------|",
+        "```",
         ...Array.from(perTicket.entries())
           .sort((a, b) => b[1].total - a[1].total)
-          .map(([id, data]) => `| ${id} | ${data.runs} | $${data.total.toFixed(4)} |`),
+          .flatMap(([ticketId, data]) => [
+            `${ticketId}  $${data.total.toFixed(4)}  (${data.runs} run${data.runs !== 1 ? "s" : ""})`,
+            ...data.phases.map((p) => `  ${p.phase.padEnd(10)} ${p.model ?? "—"}`.padEnd(45) + `$${p.cost.toFixed(4)}`),
+          ]),
         "",
         `Total tokens: ${(cost.entries.reduce((s, e) => s + e.inputTokens + e.outputTokens, 0)).toLocaleString()}`,
       ];
 
       emitInfo(pi, lines.join("\n"));
+    },
+  });
+
+  // ── /feature-ticket-mark-pending ─────────────────────────────────────────
+  pi.registerCommand("feature-ticket-mark-pending", {
+    description: "Re-activate a blocked/needs_fix/done ticket by setting it back to pending",
+    getArgumentCompletions: createFeatureCompletions,
+    handler: async (args, ctx: CommandContext) => {
+      const config = await loadConfig(ctx.cwd);
+      const specsRoot = resolveSpecsRoot(ctx.cwd, config);
+      const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
+      if (!feature) return;
+
+      const registry = await loadRegistry(specsRoot, feature);
+
+      // Only offer tickets that are not already pending/in_progress
+      const unlockable = registry.tickets.filter(
+        (t) => t.status === "blocked" || t.status === "needs_fix" || t.status === "done",
+      );
+
+      if (unlockable.length === 0) {
+        emitInfo(pi, `All tickets for **${feature}** are already pending or in progress.`);
+        return;
+      }
+
+      const labelToId = new Map<string, string>();
+      const ticketLabels = unlockable.map((t) => {
+        const badge =
+          t.status === "blocked"
+            ? `[🔒 ${t.status}]`
+            : t.status === "needs_fix"
+              ? `[🔧 ${t.status}]`
+              : `[✅ ${t.status}]`;
+        const reason = t.blockedReason ? ` — ${t.blockedReason}` : "";
+        const label = `${t.id}  ${badge}${reason}`;
+        labelToId.set(label, t.id);
+        return label;
+      });
+
+      const selectedLabel = await ctx.ui.select(
+        "Select ticket to re-activate:",
+        ticketLabels,
+      );
+      if (!selectedLabel) return;
+
+      const ticketId = labelToId.get(selectedLabel);
+      if (!ticketId) return;
+
+      const ticket = getTicket(registry, ticketId)!;
+      const previousStatus = ticket.status;
+      const previousReason = ticket.blockedReason;
+
+      setTicketStatus(registry, ticketId, "pending", `Manually unblocked from ${previousStatus}`);
+      await saveRegistry(specsRoot, feature, registry);
+
+      ctx.ui.notify(
+        `**${ticketId}** → **pending** (was ${previousStatus})`,
+        "info",
+      );
+      emitInfo(
+        pi,
+        `✅ Ticket **${ticketId}** marked as **pending**.\n` +
+          `Previous status: ${previousStatus}${previousReason ? ` (${previousReason})` : ""}`,
+      );
     },
   });
 
@@ -1104,13 +1197,10 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
 
   // ── /feature-flow-status ──────────────────────────────────────────────────
   pi.registerCommand("feature-flow-status", {
-    description: "Show feature-flow run history: active runs, recent executions, and selected run details",
-    handler: async (_args, ctx: CommandContext) => {
-      const component = new FeatureFlowStatusComponent({
-        onClose: () => { /* panel closed */ },
-        onRender: (panel) => emitInfo(pi, panel),
-      });
-      component.start();
+    description: "Show a concise feature-flow status summary",
+    handler: async (_args) => {
+      const panel = renderFeatureFlowStatusSummary(getRecentRuns(10), getActiveRuns());
+      emitInfo(pi, panel);
     },
   });
 
@@ -1691,7 +1781,7 @@ async function applyRoleRuntimeConfig(
 
   // Determine effective model string for display and registry lookup
   const effectiveModel: string | undefined = resolved?.model ?? roleConfig.model;
-  const effectiveThinking = resolved?.thinking ?? roleConfig.thinking;
+  const effectiveThinking = resolved?.thinking ?? roleConfig.thinking ?? "medium";
 
   const thinkingLabel = effectiveThinking ? ` | thinking:${effectiveThinking}` : "";
   const currentModelLabel = formatModelLabel(ctx.model);
@@ -1729,6 +1819,9 @@ async function applyRoleRuntimeConfig(
   }
 
   if (effectiveThinking) {
+    if (pi.getThinkingLevel() !== effectiveThinking) {
+      thinkingOverrideActive = true;
+    }
     pi.setThinkingLevel(effectiveThinking);
   }
 

@@ -184,6 +184,7 @@ describe("cost tracking", () => {
       cacheReadTokens: 200,
       cacheWriteTokens: 100,
       costUsd: 0.005,
+      model: "anthropic/claude-sonnet-4-20250514",
       recordedAt: new Date().toISOString(),
     });
 
@@ -204,10 +205,12 @@ describe("cost tracking", () => {
     await recordTicketCost(specsRoot, feature, "STK-001", "worker", 0, {
       inputTokens: 1000, outputTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0,
       costUsd: 0.005, recordedAt: new Date().toISOString(),
+      model: "anthropic/claude-sonnet-4-20250514",
     });
     await recordTicketCost(specsRoot, feature, "STK-002", "worker", 0, {
       inputTokens: 2000, outputTokens: 1000, cacheReadTokens: 0, cacheWriteTokens: 0,
       costUsd: 0.010, recordedAt: new Date().toISOString(),
+      model: "anthropic/claude-sonnet-4-20250514",
     });
 
     const cost = await readFeatureCost(specsRoot, feature);
@@ -224,10 +227,12 @@ describe("cost tracking", () => {
     await recordTicketCost(specsRoot, feature, "STK-001", "tester", 0, {
       inputTokens: 500, outputTokens: 200, cacheReadTokens: 0, cacheWriteTokens: 0,
       costUsd: 0.001, recordedAt: new Date().toISOString(),
+      model: "anthropic/claude-haiku-4-20250514",
     });
     await recordTicketCost(specsRoot, feature, "STK-001", "worker", 0, {
       inputTokens: 2000, outputTokens: 1000, cacheReadTokens: 0, cacheWriteTokens: 0,
       costUsd: 0.010, recordedAt: new Date().toISOString(),
+      model: "anthropic/claude-sonnet-4-20250514",
     });
 
     const cost = await readFeatureCost(specsRoot, feature);
@@ -247,17 +252,45 @@ describe("cost tracking", () => {
     await recordTicketCost(specsRoot, feature, "STK-001", "worker", 0, {
       inputTokens: 1000, outputTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0,
       costUsd: 0.005, recordedAt: new Date().toISOString(),
+      model: "anthropic/claude-sonnet-4-20250514",
     });
     // Same ticket/phase/runIndex again (e.g. after correction)
     await recordTicketCost(specsRoot, feature, "STK-001", "worker", 0, {
       inputTokens: 1200, outputTokens: 600, cacheReadTokens: 0, cacheWriteTokens: 0,
       costUsd: 0.006, recordedAt: new Date().toISOString(),
+      model: "anthropic/claude-opus-4-20250514",
     });
 
     const cost = await readFeatureCost(specsRoot, feature);
     expect(cost!.entries).toHaveLength(1);
     expect(cost!.totalCostUsd).toBe(0.006);
     expect(cost!.entries[0]!.inputTokens).toBe(1200);
+    expect(cost!.entries[0]!.model).toBe("anthropic/claude-opus-4-20250514");
+  });
+
+  it("saves and retrieves the model field per entry", async () => {
+    const specsRoot = await makeTempDir();
+    dirs.push(specsRoot);
+    const feature = "model-cost";
+    await mkdir(path.join(specsRoot, feature), { recursive: true });
+
+    await recordTicketCost(specsRoot, feature, "STK-001", "tester", 0, {
+      inputTokens: 500, outputTokens: 200, cacheReadTokens: 0, cacheWriteTokens: 0,
+      costUsd: 0.001, recordedAt: new Date().toISOString(),
+      model: "anthropic/claude-haiku-4-20250514",
+    });
+    await recordTicketCost(specsRoot, feature, "STK-001", "worker", 0, {
+      inputTokens: 2000, outputTokens: 1000, cacheReadTokens: 0, cacheWriteTokens: 0,
+      costUsd: 0.010, recordedAt: new Date().toISOString(),
+      model: "anthropic/claude-sonnet-4-20250514",
+    });
+
+    const cost = await readFeatureCost(specsRoot, feature);
+    expect(cost).not.toBeNull();
+    expect(cost!.entries).toHaveLength(2);
+    const byPhase = new Map(cost!.entries.map((e) => [e.phase, e]));
+    expect(byPhase.get("tester")!.model).toBe("anthropic/claude-haiku-4-20250514");
+    expect(byPhase.get("worker")!.model).toBe("anthropic/claude-sonnet-4-20250514");
   });
 
   it("returns null when no cost file exists", async () => {

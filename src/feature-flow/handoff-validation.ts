@@ -55,6 +55,55 @@ function isTestEntryArray(value: unknown): boolean {
       && isNonEmptyString((entry as Record<string, unknown>).scope));
 }
 
+function normalizeRepoRelativePath(raw: string): string {
+  return raw
+    .replace(/^`|`$/g, "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/\/+/g, "/")
+    .replace(/\/$/, "");
+}
+
+function looksLikeDirectory(target: string): boolean {
+  const tail = target.split("/").pop() ?? target;
+  return !tail.includes(".");
+}
+
+function parseAllowedTargets(content: string): { files: Set<string>; directories: Set<string> } {
+  const files = new Set<string>();
+  const directories = new Set<string>();
+  const metadataLines = [...content.matchAll(/^\s*-\s*Files:\s*(.+)$/gim)].map((m) => m[1]!.trim());
+  const rawTargets = metadataLines.length > 0
+    ? metadataLines.flatMap((line) => line.split(",").map((part) => part.trim()).filter(Boolean))
+    : [];
+
+  for (const rawTarget of rawTargets) {
+    const raw = rawTarget.trim();
+    const normalized = normalizeRepoRelativePath(raw);
+    if (!normalized || normalized === "none" || normalized.startsWith("<")) continue;
+    const isDirectoryTarget = raw.endsWith("/") || looksLikeDirectory(normalized);
+    if (isDirectoryTarget) {
+      directories.add(normalized);
+      continue;
+    }
+    files.add(normalized);
+  }
+
+  return { files, directories };
+}
+
+function isWithinAllowedTargets(testPath: string, allowed: { files: Set<string>; directories: Set<string> }): boolean {
+  const normalized = normalizeRepoRelativePath(testPath);
+  if (!normalized) return false;
+  if (allowed.files.has(normalized)) return true;
+  for (const dir of allowed.directories) {
+    if (normalized === dir || normalized.startsWith(`${dir}/`)) return true;
+  }
+  return false;
+}
+
+
 async function validateMarkdownArtifact(
   filePath: string,
   headings: string[],
@@ -134,12 +183,41 @@ export async function validateTesterArtifacts(
   testerNotesPath: string,
   handoffLogPath: string,
   testerHandoffPath: string,
+  ticketPath?: string,
 ): Promise<HandoffValidationResult> {
   const issues = [
     ...await validateMarkdownArtifact(testerNotesPath, ["## Tests written", "## Test guidelines followed", "## Notes for worker"], "tester notes"),
     ...await validateMarkdownArtifact(handoffLogPath, ["## Tester", "## Worker", "## Reviewer", "## Manager"], "handoff log"),
     ...await validateJsonArtifact(testerHandoffPath, "tester"),
   ];
+
+  if (ticketPath) {
+    const [ticketContent, handoffContent] = await Promise.all([
+      readTextIfExists(ticketPath),
+      readTextIfExists(testerHandoffPath),
+    ]);
+
+    const allowedTargets = ticketContent ? parseAllowedTargets(ticketContent) : { files: new Set<string>(), directories: new Set<string>() };
+
+    let parsedHandoff: { testsWritten?: Array<{ path?: string; scope?: string }> } | undefined;
+    if (handoffContent) {
+      try {
+        parsedHandoff = JSON.parse(handoffContent) as { testsWritten?: Array<{ path?: string; scope?: string }> };
+      } catch {
+        parsedHandoff = undefined;
+      }
+    }
+
+    const testsWritten = parsedHandoff?.testsWritten ?? [];
+    for (const testEntry of testsWritten) {
+      const pathValue = testEntry?.path;
+      if (!isNonEmptyString(pathValue)) continue;
+      if (!ticketContent || !isWithinAllowedTargets(pathValue, allowedTargets)) {
+        issues.push(`tester handoff test path is outside ticket scope: ${pathValue}`);
+      }
+    }
+  }
+
   return { ok: issues.length === 0, issues };
 }
 

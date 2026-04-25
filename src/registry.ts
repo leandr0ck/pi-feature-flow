@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { TicketCostEntry, TicketRecord, TicketRegistry, TicketRunMode, FeatureCost } from "./types.js";
+import type { TicketCostEntry, TicketRecord, TicketRegistry, TicketRunMode, TicketStatus, FeatureCost } from "./types.js";
 import { DEFAULT_TICKETS_DIR_NAME, DEFAULT_REGISTRY_FILE, DEFAULT_FEATURE_MEMORY_FILE } from "./config.js";
 
 // ─── Path helpers ─────────────────────────────────────────────────────────────
@@ -298,6 +298,24 @@ export async function readFeatureCost(specsRoot: string, feature: string): Promi
   } catch {
     return null;
   }
+}
+
+export function setTicketStatus(
+  registry: TicketRegistry,
+  ticketId: string,
+  status: TicketStatus,
+  note?: string,
+): void {
+  const now = new Date().toISOString();
+  const ticket = getTicket(registry, ticketId);
+  if (!ticket) throw new Error(`Ticket ${ticketId} not found`);
+
+  ticket.status = status;
+  ticket.updatedAt = now;
+  ticket.blockedReason = status === "blocked" ? note || "Blocked" : undefined;
+  ticket.completedAt = status === "done" ? now : undefined;
+  const outcome = status === "blocked" || status === "needs_fix" || status === "done" ? status : undefined;
+  closeOpenRun(ticket, now, outcome, note);
 }
 
 export async function recordTicketCost(

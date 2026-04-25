@@ -146,6 +146,7 @@ export type TicketCostEntry = {
   ticketId: string;
   phase: "tester" | "worker" | "reviewer" | "manager";
   runIndex: number;
+  model?: string;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;

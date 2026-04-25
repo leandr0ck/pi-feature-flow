@@ -21,7 +21,7 @@ function renderRoleConfig(config: FeatureFlowConfig, role: FeatureAgentRole): st
   const roleConfig = config.agents?.[role] ?? {};
   return [
     ...(roleConfig.model ? [`model: ${roleConfig.model}`] : []),
-    ...(roleConfig.thinking ? [`thinking: ${roleConfig.thinking}`] : []),
+    `thinking: ${roleConfig.thinking ?? "medium"}`,
     ...(roleConfig.skills?.length ? [`skills: ${roleConfig.skills.join(", ")}`] : []),
   ];
 }
@@ -118,6 +118,8 @@ export function buildTesterPrompt(
     "1. Read the ticket Acceptance Criteria carefully.",
     "2. Write the minimum tests that verify each AC.",
     "   - Test files must follow the project's existing test conventions and guidelines.",
+    "   - Write tests only in paths explicitly listed in the ticket `- Files:` metadata.",
+    "   - If the listed test scope is insufficient, respond BLOCKED instead of creating a new test file outside scope.",
     "   - Import paths must be correct even though the implementation may not exist yet.",
     "3. Do NOT run the test suite. Leave execution to the Worker.",
     `4. Write the tester notes file to: ${testerNotesPath}`,

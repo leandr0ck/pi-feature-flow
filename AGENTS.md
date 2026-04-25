@@ -67,6 +67,7 @@ The extension already switches models per role at runtime. Your job is to make s
 - Do not change workflow semantics casually.
 - Do not rename artifacts or lifecycle files without updating validators and tests.
 - Do not leave failing tests or failing typecheck.
+- **All slash commands registered in the extension must start with `feature-`**.
 
 ## Before finishing
 

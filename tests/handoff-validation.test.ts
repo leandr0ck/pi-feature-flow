@@ -27,13 +27,33 @@ describe("handoff validation", () => {
     const notes = path.join(dir, "tester-notes.md");
     const log = path.join(dir, "handoff-log.md");
     const json = path.join(dir, "tester-handoff.json");
+    const ticket = path.join(dir, "STK-001.md");
 
+    await writeFile(ticket, "# STK-001 — Test\n\n## Goal\nTest\n\n- Requires: none\n- Files: src/example.ts, tests/example.test.ts\n\n## Implementation Notes\n- Keep it small\n\n## Acceptance Criteria\n- Works\n", "utf8");
     await writeFile(notes, "# Tester Notes — STK-001\n\n## Tests written\n- tests/example.test.ts: covers AC\n\n## Test guidelines followed\n- existing conventions\n\n## Notes for worker\n- run bun test\n", "utf8");
     await writeFile(log, "# Handoff Log — STK-001\n\n## Tester\n- done\n\n## Worker\n- pending\n\n## Reviewer\n- pending\n\n## Manager\n- pending\n", "utf8");
     await writeFile(json, JSON.stringify({ ticketId: "STK-001", phase: "tester", status: "APPROVED", testsWritten: [{ path: "tests/example.test.ts", scope: "covers AC" }], testGuidelines: ["existing conventions"], notesForWorker: ["run bun test"] }, null, 2), "utf8");
 
-    const result = await validateTesterArtifacts(notes, log, json);
+    const result = await validateTesterArtifacts(notes, log, json, ticket);
     expect(result.ok).toBe(true);
+  });
+
+  it("rejects tester artifacts when tests are outside ticket scope", async () => {
+    const dir = await makeTempDir();
+    dirs.push(dir);
+    const notes = path.join(dir, "tester-notes.md");
+    const log = path.join(dir, "handoff-log.md");
+    const json = path.join(dir, "tester-handoff.json");
+    const ticket = path.join(dir, "STK-001.md");
+
+    await writeFile(ticket, "# STK-001 — Test\n\n## Goal\nTest\n\n- Requires: none\n- Files: src/example.ts, tests/example.test.ts\n\n## Implementation Notes\n- Keep it small\n\n## Acceptance Criteria\n- Works\n", "utf8");
+    await writeFile(notes, "# Tester Notes — STK-001\n\n## Tests written\n- tests/other.test.ts: covers AC\n\n## Test guidelines followed\n- existing conventions\n\n## Notes for worker\n- run bun test\n", "utf8");
+    await writeFile(log, "# Handoff Log — STK-001\n\n## Tester\n- done\n\n## Worker\n- pending\n\n## Reviewer\n- pending\n\n## Manager\n- pending\n", "utf8");
+    await writeFile(json, JSON.stringify({ ticketId: "STK-001", phase: "tester", status: "APPROVED", testsWritten: [{ path: "tests/other.test.ts", scope: "covers AC" }], testGuidelines: ["existing conventions"], notesForWorker: ["run bun test"] }, null, 2), "utf8");
+
+    const result = await validateTesterArtifacts(notes, log, json, ticket);
+    expect(result.ok).toBe(false);
+    expect(result.issues.join(" ")).toContain("outside ticket scope");
   });
 
   it("rejects placeholder markdown and incomplete json", async () => {

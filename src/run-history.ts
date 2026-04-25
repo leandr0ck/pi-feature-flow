@@ -25,7 +25,7 @@ export interface RunEntry {
   status: RunStatus;
   duration?: number; // ms
   outcome?: RunOutcome;
-  model?: string;    // provider/id
+  model?: string;    // provider/id of the model that ran this phase
   thinking?: string;
   skills?: string[];
   tokens?: TokenUsage;
