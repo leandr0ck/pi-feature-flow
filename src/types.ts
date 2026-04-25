@@ -31,6 +31,7 @@ export type TicketRecord = {
   blockedReason?: string;
   startedAt?: string;
   completedAt?: string;
+  commitHash?: string;
   updatedAt: string;
   runs: TicketRun[];
 };

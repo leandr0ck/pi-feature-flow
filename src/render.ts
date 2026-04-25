@@ -149,6 +149,10 @@ function formatTicketLines(
         extra += ` — ${ticket.blockedReason}`;
       }
 
+      if (ticket.commitHash) {
+        extra += ` (${ticket.commitHash})`;
+      }
+
       const lastRun = ticket.runs.at(-1);
       if (lastRun) {
         extra += ` [${lastRun.mode}${lastRun.outcome ? ` -> ${lastRun.outcome}` : ""}]`;

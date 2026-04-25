@@ -2,7 +2,7 @@ import path from "node:path";
 import { promises as fsPromises } from "node:fs";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
-import type { CommandPreset, FeatureAgentRole, FeatureFlowConfig } from "../src/types.js";
+import type { CommandPreset, FeatureAgentRole, FeatureFlowConfig, TicketRegistry } from "../src/types.js";
 import {
   loadConfig,
   resolveSpecsRoot,
@@ -35,6 +35,7 @@ import {
   recordTicketCost,
   resolveTicketStatus,
   setTicketStatus,
+  setTicketCommitHash,
   saveRegistry,
   startTicketRun,
 } from "../src/registry.js";
@@ -56,6 +57,11 @@ import {
   validateTesterArtifacts,
   validateWorkerArtifacts,
 } from "../src/feature-flow/handoff-validation.js";
+import {
+  checkRepoClean,
+  commitSnapshot,
+  buildCommitMessage,
+} from "../src/feature-flow/git.js";
 import {
   deriveFeatureSlug,
   ensureFeatureDir,
@@ -704,6 +710,7 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
         const lastRun = ticket.runs[ticket.runs.length - 1]!;
         lastRun.usage = cumulativeUsage;
       }
+      // Save status first (registry is persisted below or in commitDoneTicket)
       await saveRegistry(pending.specsRoot, pending.feature, registry);
 
       ctx.ui.notify(
@@ -712,6 +719,29 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       );
 
       if (parsed.status === "done") {
+        // Commit the ticket to git before advancing
+        const commitHash = await commitDoneTicket(
+          registry,
+          pending.cwd,
+          pending.specsRoot,
+          pending.feature,
+          pending.ticketId,
+          ctx,
+        );
+
+        if (!commitHash) {
+          // Commit failed — do NOT advance; user must resolve manually
+          ctx.ui.notify(
+            `⚠️ ${pending.ticketId} marked done but commit failed. Fix the issue and commit manually before running the next ticket.`,
+            "warning",
+          );
+          emitInfo(
+            pi,
+            `Commit failed for ${pending.ticketId}. The ticket is marked done but changes are not committed. Auto-advance halted.`,
+          );
+          return;
+        }
+
         const executionConfig = await loadConfig(pending.cwd);
         if (shouldAutoAdvanceToNextTicket(executionConfig)) {
           await startPreparedNextTicket(pi, pending.feature, pending.cwd, pending.specsRoot, ctx);
@@ -784,6 +814,9 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
 
       const tddEnabled = resolveTddEnabled(config);
       await ensureFeatureDir(specsRoot, feature);
+
+      // Preflight: repo must be clean before starting a new plan
+      if (!(await preflightRepoClean(ctx.cwd, ctx))) return;
 
       emitInfo(
         pi,
@@ -870,6 +903,9 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
       if (!feature) return;
 
+      // Preflight: repo must be clean when starting fresh
+      if (!(await preflightRepoClean(ctx.cwd, ctx))) return;
+
       if (!(await validateBeforeExecution(pi, feature, specsRoot, ctx))) return;
 
       const registry = await loadRegistry(specsRoot, feature);
@@ -905,6 +941,9 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       const feature = await resolveFeatureSlug(args, specsRoot, "Choose feature", ctx);
       if (!feature) return;
 
+      // Preflight: repo must be clean when starting fresh
+      if (!(await preflightRepoClean(ctx.cwd, ctx))) return;
+
       try {
         await runNextTicketFlow(pi, feature, ctx);
       } catch (error: unknown) {
@@ -935,6 +974,9 @@ export default function featureTicketFlow(pi: ExtensionAPI) {
       resolveTicketStatus(registry, current.id, "done");
       await saveRegistry(specsRoot, feature, registry);
       emitInfo(pi, `Marked ${current.id} as done.`);
+
+      // Commit the ticket to git
+      await commitDoneTicket(registry, ctx.cwd, specsRoot, feature, current.id, ctx);
 
       const nextChoice = await ctx.ui.select(`Ticket ${current.id} done`, [
         "Start next ticket",
@@ -1856,6 +1898,8 @@ async function runNextTicketFlow(pi: ExtensionAPI, feature: string, ctx: Command
     if (choice.includes("done")) {
       resolveTicketStatus(registry, current.id, "done");
       await saveRegistry(specsRoot, feature, registry);
+      // Commit before advancing to next ticket
+      await commitDoneTicket(registry, ctx.cwd, specsRoot, feature, current.id, ctx);
     }
     if (choice.includes("needs-fix")) {
       const note = await ctx.ui.input(`What still needs fixing in ${current.id}?`, "");
@@ -1908,6 +1952,73 @@ async function startPreparedNextTicket(
   await saveRegistry(specsRoot, feature, refreshed);
   emitInfo(pi, `Starting ${next.id} — ${next.title}`);
   await launchTicketExecution(pi, ctx, feature, next.id, cwd, specsRoot, mode);
+}
+
+/**
+ * Create a git commit for a finished ticket, persist the hash in the registry,
+ * and return the hash. If the commit fails, does NOT advance.
+ * Returns undefined if the commit failed or there was nothing to commit.
+ */
+/**
+ * Simplified ctx type for commitDoneTicket and preflightRepoClean
+ */
+type NotifyFn = { ui: { notify: (message: string, type?: "error" | "warning" | "info") => void } };
+
+async function commitDoneTicket(
+  registry: TicketRegistry,
+  cwd: string,
+  specsRoot: string,
+  feature: string,
+  ticketId: string,
+  ctx: NotifyFn,
+): Promise<string | undefined> {
+  const ticket = getTicket(registry, ticketId);
+  if (!ticket) return undefined;
+
+  const msg = buildCommitMessage(feature, ticketId, ticket.title);
+  const result = await commitSnapshot(cwd, msg);
+
+  if (!result.ok) {
+    ctx.ui.notify(`Commit failed for ${ticketId}: ${result.error}`, "warning");
+    return undefined;
+  }
+
+  // Persist the commit hash in the registry
+  setTicketCommitHash(registry, ticketId, result.commitHash ?? "unknown");
+  await saveRegistry(specsRoot, feature, registry);
+
+  ctx.ui.notify(`${ticketId} committed: ${result.commitHash}`, "info");
+  return result.commitHash;
+}
+
+/**
+ * Pre-flight check: abort with a visible notification if the git working tree
+ * is not clean. Returns true if the repo is clean (ok to proceed).
+ */
+async function preflightRepoClean(cwd: string, ctx: NotifyFn): Promise<boolean> {
+  try {
+    const status = await checkRepoClean(cwd);
+    if (status.clean) return true;
+
+    const maxShow = 5;
+    const fileList = status.dirtyFiles.slice(0, maxShow);
+    const more = status.dirtyFiles.length > maxShow ? `\n... and ${status.dirtyFiles.length - maxShow} more` : "";
+    ctx.ui.notify(
+      `Repo is not clean. Commit, stash, or discard changes before starting a feature. Dirty files:\n${fileList.join("\n")}${more}`,
+      "error",
+    );
+    return false;
+  } catch (err: unknown) {
+    // If git fails entirely (e.g. no git repo in test sessions), allow the flow
+    // to proceed. The commit step will fail later if git isn't available.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("git status failed")) {
+      // Not a git repo or git not installed — allow
+      return true;
+    }
+    ctx.ui.notify(`Cannot check repo status: ${msg}`, "error");
+    return false;
+  }
 }
 
 // ─── Run history tracking helpers ────────────────────────────────────────────────

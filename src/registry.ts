@@ -199,6 +199,7 @@ function mergeRegistry(
         blockedReason: previous?.blockedReason,
         startedAt: previous?.startedAt,
         completedAt: previous?.completedAt,
+        commitHash: previous?.commitHash,
         updatedAt: previous?.updatedAt || now,
         runs: previous?.runs || [],
       } satisfies TicketRecord;
@@ -316,6 +317,17 @@ export function setTicketStatus(
   ticket.completedAt = status === "done" ? now : undefined;
   const outcome = status === "blocked" || status === "needs_fix" || status === "done" ? status : undefined;
   closeOpenRun(ticket, now, outcome, note);
+}
+
+export function setTicketCommitHash(
+  registry: TicketRegistry,
+  ticketId: string,
+  hash: string,
+): void {
+  const ticket = getTicket(registry, ticketId);
+  if (!ticket) throw new Error(`Ticket ${ticketId} not found`);
+  ticket.commitHash = hash;
+  ticket.updatedAt = new Date().toISOString();
 }
 
 export async function recordTicketCost(
