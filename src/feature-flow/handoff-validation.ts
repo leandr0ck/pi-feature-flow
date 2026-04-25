@@ -186,7 +186,7 @@ export async function validateTesterArtifacts(
   ticketPath?: string,
 ): Promise<HandoffValidationResult> {
   const issues = [
-    ...await validateMarkdownArtifact(testerNotesPath, ["## Tests written", "## Test guidelines followed", "## Notes for worker"], "tester notes"),
+    ...await validateMarkdownArtifact(testerNotesPath, ["## Tests written", "## Test guidelines followed", "## Hidden test dependencies", "## Notes for worker"], "tester notes"),
     ...await validateMarkdownArtifact(handoffLogPath, ["## Tester", "## Worker", "## Reviewer", "## Manager"], "handoff log"),
     ...await validateJsonArtifact(testerHandoffPath, "tester"),
   ];
@@ -252,7 +252,7 @@ export async function validateManagerArtifacts(
   managerHandoffPath: string,
 ): Promise<HandoffValidationResult> {
   const issues = [
-    ...await validateMarkdownArtifact(workerContextPath, ["## Status", "## Files modified", "## Reviewer findings", "## Continuation notes"], "worker context"),
+    ...await validateMarkdownArtifact(workerContextPath, ["## Status", "## Files modified", "## Reviewer findings", "## Failure classification", "## Root cause groups", "## Continuation notes"], "worker context"),
     ...await validateFeatureMemoryArtifact(featureMemoryPath),
     ...await validateMarkdownArtifact(handoffLogPath, ["## Manager"], "handoff log"),
     ...await validateJsonArtifact(managerHandoffPath, "manager"),

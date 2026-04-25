@@ -8,6 +8,15 @@ export function renderTesterNotesTemplate(ticketId: string): string {
     "## Test guidelines followed",
     "- <project-specific test conventions or patterns applied>",
     "",
+    "## Hidden test dependencies",
+    "- <check all that apply>",
+    "  - [ ] uses full endpoint behavior rather than raw persistence",
+    "  - [ ] assumes valid derived data exists",
+    "  - [ ] depends on wrapped response format",
+    "  - [ ] depends on role-specific semantics (reject / ignore / strip field)",
+    "  - [ ] relies on specific database state or seed data",
+    "  - [ ] other: <specify>",
+    "",
     "## Notes for worker",
     "- <anything the worker must know: file paths, imports, test command>",
     "",
@@ -133,6 +142,22 @@ export function renderWorkerContextTemplate(ticketId: string): string {
     "## Reviewer findings",
     "- <issue or 'none'>",
     "",
+    "## Failure classification",
+    "- <check all that apply>",
+    "  - [ ] implementation failure",
+    "  - [ ] fixture/setup failure",
+    "  - [ ] contract/response-shape mismatch",
+    "  - [ ] authorization/role mismatch",
+    "  - [ ] duplicate data / idempotency issue",
+    "  - [ ] precondition missing (feature code never reached)",
+    "  - [ ] unknown / convention-dependent",
+    "",
+    "## Root cause groups (if multiple failures)",
+    "- Group A: <implementation gaps>",
+    "- Group B: <fixture/setup issues>",
+    "- Group C: <contract mismatch>",
+    "- Group D: <unresolved / convention-dependent>",
+    "",
     "## Continuation notes",
     "- <what the next attempt must know>",
     "",
@@ -218,4 +243,36 @@ export function toMarkdownCodeFence(content: string): string[] {
 
 export function toJsonCodeFence(content: string): string[] {
   return ["```json", ...content.trimEnd().split("\n"), "```"];
+}
+
+/**
+ * Render a failure analysis section for use in tester or worker handoffs.
+ * The agent fills this after the first failing test run to classify failures
+ * before making edits.
+ */
+export function renderFailureAnalysisTemplate(): string {
+  return [
+    "## Failure triage",
+    "Classify each failing assertion into exactly one bucket:",
+    "",
+    "| Failure | Bucket |",
+    "|---------|--------|",
+    "| <describe failure> | implementation |",
+    "| <describe failure> | fixture/setup |",
+    "| <describe failure> | contract/response-shape |",
+    "| <describe failure> | authorization/role |",
+    "| <describe failure> | duplicate/idempotency |",
+    "| <describe failure> | convention-dependent |",
+    "| <describe failure> | unknown |",
+    "",
+    "### Root cause summary",
+    "- <if failures span 2+ buckets, pause and summarize likely root causes>",
+    "",
+    "### Confidence assessment",
+    "- Implementation correctness: <high | medium | low>",
+    "- Fixture correctness:       <high | medium | low>",
+    "- Contract alignment:        <high | medium | low>",
+    "- Test pass state:           <passing | failing>",
+    "",
+  ].join("\n");
 }

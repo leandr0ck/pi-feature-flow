@@ -42,6 +42,15 @@ Write `tickets/<ticket-id>-tester-notes.md` with this exact format:
 ## Red state confirmed
 - <how you verified the tests are failing>
 
+## Hidden test dependencies
+- <check all that apply>
+  - [ ] uses full endpoint behavior rather than raw persistence
+  - [ ] assumes valid derived data exists
+  - [ ] depends on wrapped response format
+  - [ ] depends on role-specific semantics (reject / ignore / strip field)
+  - [ ] relies on specific database state or seed data
+  - [ ] other: <specify>
+
 ## Notes for worker
 - <anything the worker should know before implementing>
 ```
@@ -72,6 +81,48 @@ The worker agent receives a separate prompt that includes the tester notes path.
 - If TDD is off: implement the smallest slice that satisfies the ticket goal directly.
 - Prefer minimal, testable changes.
 - Do not pull future tickets into scope.
+
+#### Failure triage (mandatory)
+After the first failing test run, classify each failure into exactly one bucket:
+- **implementation** — code path exists but logic is wrong
+- **fixture/setup** — test data, DB state, or setup is incomplete
+- **contract/response-shape** — test and API disagree on response format
+- **authorization/role** — wrong permissions or missing auth setup
+- **duplicate/idempotency** — repeated inserts hitting unique constraints
+- **precondition missing** — feature code never reached (entity absent despite 2xx)
+- **convention-dependent** — behavior depends on undocumented conventions
+
+If failures span 2+ buckets, pause and summarize root causes before editing.
+
+#### Fixture-depth awareness
+If a test combines HTTP calls with raw DB inserts, warn that fixtures may bypass required side effects.
+
+#### Response-shape awareness
+If a test probes multiple alternative shapes (e.g. a?.b || a?.c), verify the actual endpoint contract before implementing.
+
+#### Precondition awareness
+Before concluding a failure is an implementation gap, confirm the relevant code branch was actually reached.
+
+#### Duplicate-data awareness
+If errors include "duplicate key" or "unique constraint" — check for non-idempotent test setup before debugging domain logic.
+
+#### Root-cause grouping (after second failure)
+If the second run still has multiple failures, stop and group them:
+- Group A: implementation gaps
+- Group B: fixture/setup issues
+- Group C: contract mismatch
+- Group D: unresolved / convention-dependent
+
+This breaks the "patch one symptom at a time" loop.
+
+#### Confidence gating
+Before marking APPROVED, state confidence separately for:
+- Implementation correctness
+- Fixture correctness
+- Contract alignment
+- Test pass state
+
+If implementation is confident but tests fail due to setup ambiguity, return NEEDS-FIX with explicit cause categories.
 
 ### Reviewer
 - Use the `code-reviewer` skill if available.

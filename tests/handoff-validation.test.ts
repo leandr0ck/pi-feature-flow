@@ -30,7 +30,7 @@ describe("handoff validation", () => {
     const ticket = path.join(dir, "STK-001.md");
 
     await writeFile(ticket, "# STK-001 — Test\n\n## Goal\nTest\n\n- Requires: none\n- Files: src/example.ts, tests/example.test.ts\n\n## Implementation Notes\n- Keep it small\n\n## Acceptance Criteria\n- Works\n", "utf8");
-    await writeFile(notes, "# Tester Notes — STK-001\n\n## Tests written\n- tests/example.test.ts: covers AC\n\n## Test guidelines followed\n- existing conventions\n\n## Notes for worker\n- run bun test\n", "utf8");
+    await writeFile(notes, "# Tester Notes — STK-001\n\n## Tests written\n- tests/example.test.ts: covers AC\n\n## Test guidelines followed\n- existing conventions\n\n## Hidden test dependencies\n- [ ] uses full endpoint behavior rather than raw persistence\n- [ ] other: none\n\n## Notes for worker\n- run bun test\n", "utf8");
     await writeFile(log, "# Handoff Log — STK-001\n\n## Tester\n- done\n\n## Worker\n- pending\n\n## Reviewer\n- pending\n\n## Manager\n- pending\n", "utf8");
     await writeFile(json, JSON.stringify({ ticketId: "STK-001", phase: "tester", status: "APPROVED", testsWritten: [{ path: "tests/example.test.ts", scope: "covers AC" }], testGuidelines: ["existing conventions"], notesForWorker: ["run bun test"] }, null, 2), "utf8");
 
@@ -47,7 +47,7 @@ describe("handoff validation", () => {
     const ticket = path.join(dir, "STK-001.md");
 
     await writeFile(ticket, "# STK-001 — Test\n\n## Goal\nTest\n\n- Requires: none\n- Files: src/example.ts, tests/example.test.ts\n\n## Implementation Notes\n- Keep it small\n\n## Acceptance Criteria\n- Works\n", "utf8");
-    await writeFile(notes, "# Tester Notes — STK-001\n\n## Tests written\n- tests/other.test.ts: covers AC\n\n## Test guidelines followed\n- existing conventions\n\n## Notes for worker\n- run bun test\n", "utf8");
+    await writeFile(notes, "# Tester Notes — STK-001\n\n## Tests written\n- tests/other.test.ts: covers AC\n\n## Test guidelines followed\n- existing conventions\n\n## Hidden test dependencies\n- [ ] uses full endpoint behavior rather than raw persistence\n- [ ] other: none\n\n## Notes for worker\n- run bun test\n", "utf8");
     await writeFile(log, "# Handoff Log — STK-001\n\n## Tester\n- done\n\n## Worker\n- pending\n\n## Reviewer\n- pending\n\n## Manager\n- pending\n", "utf8");
     await writeFile(json, JSON.stringify({ ticketId: "STK-001", phase: "tester", status: "APPROVED", testsWritten: [{ path: "tests/other.test.ts", scope: "covers AC" }], testGuidelines: ["existing conventions"], notesForWorker: ["run bun test"] }, null, 2), "utf8");
 
@@ -87,7 +87,7 @@ describe("handoff validation", () => {
     const memory = path.join(dir, "feature-memory.md");
     const managerLog = path.join(dir, "manager-handoff-log.md");
     const managerJson = path.join(dir, "manager-handoff.json");
-    await writeFile(context, "# Worker Context — STK-001\n\n## Status\nAPPROVED\n\n## Files modified\n- src/example.ts: done [complete]\n\n## Reviewer findings\n- none\n\n## Continuation notes\n- none\n", "utf8");
+    await writeFile(context, "# Worker Context — STK-001\n\n## Status\nAPPROVED\n\n## Files modified\n- src/example.ts: done [complete]\n\n## Reviewer findings\n- none\n\n## Failure classification\n- [ ] implementation failure\n\n## Root cause groups\n- Group A: none\n\n## Continuation notes\n- none\n", "utf8");
     await writeFile(memory, "# Feature Memory — demo\n\n## Patterns confirmed\n- reuse helper\n\n## Decisions\n- keep scope thin\n\n## Pitfalls to avoid\n- avoid drift\n\n## Ticket learnings\n### demo\n- 2026-04-21 STK-001 done\n", "utf8");
     await writeFile(managerLog, "# Handoff Log — STK-001\n\n## Manager\n- promoted learnings\n", "utf8");
     await writeFile(managerJson, JSON.stringify({ ticketId: "STK-001", phase: "manager", status: "APPROVED", promotedToFeatureMemory: ["reuse helper"], reusablePatterns: ["thin slices"], continuationAdvice: ["read feature memory"] }, null, 2), "utf8");
